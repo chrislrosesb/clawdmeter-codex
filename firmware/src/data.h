@@ -16,4 +16,18 @@ struct UsageData {
     int  clock_fmt;          // 12 or 24 (hour format from daemon); defaults to 24
     bool ok;                 // data parse succeeded
     bool valid;              // false until first successful parse
+
+    // Codex (OpenAI) usage — the payload's optional "x" object, sourced from
+    // Codex CLI's local session logs by the daemon. codex_valid false = the
+    // payload carried no Codex data (host has no Codex, or opted out).
+    bool  codex_valid;
+    float codex_pct;           // primary window used %
+    int   codex_reset_mins;    // minutes until primary window resets; -1 unknown
+    int   codex_window_mins;   // primary window length (300 = 5h, 10080 = weekly)
+    float codex_pct2;          // secondary window used %; -1 = plan has no secondary
+    int   codex_reset_mins2;
+    int   codex_window_mins2;
+    long  codex_tokens_in;     // today's input tokens across local Codex sessions
+    long  codex_tokens_out;    // today's output tokens
+    long  codex_day_avg;       // avg total tokens/day over the prior 7 days; 0 = no history
 };

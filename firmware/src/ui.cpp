@@ -217,6 +217,30 @@ static lv_obj_t* lbl_spending_desc = nullptr;     // "of your monthly budget"
 static lv_obj_t* lbl_spending_status = nullptr;   // "Under pace" / "On pace" / "Over pace"
 static lv_obj_t* lbl_anim;      // status line: connection state + whimsical idle
 
+// ---- Codex screen widgets (optional third view, fed by the payload's "x") ----
+static lv_obj_t* codex_container = nullptr;
+static lv_obj_t* panel_codex1;
+static lv_obj_t* bar_codex1;
+static lv_obj_t* lbl_codex1_pct;
+static lv_obj_t* lbl_codex1_label;
+static lv_obj_t* lbl_codex1_reset;
+static lv_obj_t* panel_codex2;
+static lv_obj_t* bar_codex2;
+static lv_obj_t* lbl_codex2_pct;
+static lv_obj_t* lbl_codex2_label;
+static lv_obj_t* lbl_codex2_reset;
+static lv_obj_t* lbl_codex_anim;           // animated status line (white variant)
+// Daily panel — today's tokens vs the 7-day average (Codex has no daily rate
+// limit, see ui_update). Occupies the second panel slot on one-window plans.
+static lv_obj_t* panel_codex_daily;
+static lv_obj_t* bar_codex_daily;
+static lv_obj_t* lbl_codex_daily_val;
+static lv_obj_t* lbl_codex_daily_label;
+static lv_obj_t* lbl_codex_daily_sub;
+static lv_obj_t* openai_img;               // corner mark shown on the Codex screen
+static lv_image_dsc_t openai_dsc;
+static bool      codex_data_seen = false;  // last live payload carried Codex data
+
 // ---- Battery indicator (shared, on top) ----
 static lv_obj_t* battery_img;
 static lv_obj_t* logo_img;
@@ -309,6 +333,22 @@ static void format_reset_time(int mins, char* buf, size_t len) {
     } else {
         snprintf(buf, len, "Resets in %dd %dh", mins / 1440, (mins % 1440) / 60);
     }
+}
+
+// Codex rate-limit windows are self-describing (length in minutes); label the
+// pill from the length so plans with only a weekly window read correctly.
+static const char* window_pill_text(int window_mins) {
+    if (window_mins >= 8000) return "Weekly";               // 10080 = 7 days
+    if (window_mins > 0 && window_mins <= 360) return "Current";  // 300 = 5h
+    return "Window";
+}
+
+// Compact human token count: 999, 12.5K, 3.2M, 1.1B.
+static void format_tokens(long v, char* buf, size_t len) {
+    if (v >= 1000000000L)    snprintf(buf, len, "%.1fB", v / 1e9);
+    else if (v >= 1000000L)  snprintf(buf, len, "%.1fM", v / 1e6);
+    else if (v >= 1000L)     snprintf(buf, len, "%.1fK", v / 1e3);
+    else                     snprintf(buf, len, "%ld", v);
 }
 
 // Forward decls — callbacks defined near ui_show_screen below
@@ -540,6 +580,55 @@ static void init_usage_screen(lv_obj_t* scr) {
     lv_obj_align(lbl_anim, LV_ALIGN_BOTTOM_MID, 0, L.anim_y);
 }
 
+// ======== Codex Screen ========
+// Same skeleton as the usage view: title + up to two window panels + a token
+// summary line. Only reachable (see global_click_cb) while live payloads carry
+// Codex data, so it never shows placeholder or stale content.
+
+static void init_codex_screen(lv_obj_t* scr) {
+    codex_container = lv_obj_create(scr);
+    lv_obj_set_size(codex_container, L.scr_w, L.scr_h);
+    lv_obj_set_pos(codex_container, 0, 0);
+    lv_obj_set_style_bg_opa(codex_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(codex_container, 0, 0);
+    lv_obj_set_style_pad_all(codex_container, 0, 0);
+    lv_obj_clear_flag(codex_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(codex_container, global_click_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t* title = lv_label_create(codex_container);
+    lv_label_set_text(title, "Codex");
+    lv_obj_set_style_text_font(title, L.title_font, 0);
+    lv_obj_set_style_text_color(title, COL_TEXT, 0);
+    // Screen-centered (no title_nudge): the panels below are the dominant
+    // shapes and an offset title reads as misaligned against them.
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, L.title_y);
+
+    panel_codex1 = make_usage_panel(codex_container, L.content_y, "Current",
+                     &lbl_codex1_pct, &lbl_codex1_label,
+                     &bar_codex1, &lbl_codex1_reset);
+
+    // The second slot holds either the plan's secondary rate window or the
+    // Daily panel (one-window plans) — ui_update picks which is visible.
+    const int slot2_y = L.content_y + L.usage_panel_h + L.usage_panel_gap;
+    panel_codex2 = make_usage_panel(codex_container, slot2_y, "Weekly",
+                     &lbl_codex2_pct, &lbl_codex2_label,
+                     &bar_codex2, &lbl_codex2_reset);
+
+    panel_codex_daily = make_usage_panel(codex_container, slot2_y, "Daily",
+                     &lbl_codex_daily_val, &lbl_codex_daily_label,
+                     &bar_codex_daily, &lbl_codex_daily_sub);
+
+    // Animated status line, same as the usage view but in white so the accent
+    // color stays Claude's. Driven by ui_tick_anim().
+    lbl_codex_anim = lv_label_create(codex_container);
+    lv_label_set_text(lbl_codex_anim, "");
+    lv_obj_set_style_text_font(lbl_codex_anim, L.anim_font, 0);
+    lv_obj_set_style_text_color(lbl_codex_anim, COL_TEXT, 0);
+    lv_obj_align(lbl_codex_anim, LV_ALIGN_BOTTOM_MID, 0, L.anim_y);
+
+    lv_obj_add_flag(codex_container, LV_OBJ_FLAG_HIDDEN);  // ui_show_screen decides
+}
+
 // ======== Public API ========
 
 void ui_init(void) {
@@ -557,6 +646,7 @@ void ui_init(void) {
     init_battery_icons();
 
     init_usage_screen(scr);
+    init_codex_screen(scr);
     splash_init(scr);
 
     if (splash_get_root()) {
@@ -577,6 +667,22 @@ void ui_init(void) {
         lv_image_set_src(logo_img, &logo_dsc);
         lv_obj_set_pos(logo_img, L.margin, top);
 #endif
+    }
+
+    // OpenAI mark — swapped into the corner-logo slot while the Codex screen
+    // is showing (the Clawd mascot stays on every other non-splash screen).
+    {
+        const int slot = L.small_icons ? LOGO_SMALL_HEIGHT : LOGO_HEIGHT;
+        const int ow = L.small_icons ? ICON_OPENAI_SMALL_W : ICON_OPENAI_W;
+        const int oh = L.small_icons ? ICON_OPENAI_SMALL_H : ICON_OPENAI_H;
+        init_icon_dsc_rgb565a8(&openai_dsc, ow, oh,
+            L.small_icons ? icon_openai_small_data : icon_openai_data);
+        openai_img = lv_image_create(scr);
+        lv_image_set_src(openai_img, &openai_dsc);
+        // The mark is smaller than the logo slot — center it in the slot.
+        lv_obj_set_pos(openai_img, L.margin + (slot - ow) / 2,
+                       L.logo_y + (slot - oh) / 2);
+        lv_obj_add_flag(openai_img, LV_OBJ_FLAG_HIDDEN);
     }
 
     battery_img = lv_image_create(scr);
@@ -673,6 +779,60 @@ void ui_update(const UsageData* data) {
         format_reset_time(data->weekly_reset_mins, buf, sizeof(buf));
         lv_label_set_text(lbl_weekly_reset, buf);
     }
+
+    // ---- Codex view ----
+    codex_data_seen = data->codex_valid;
+    if (!data->codex_valid) {
+        // Host stopped sending Codex data while we're on its screen (config
+        // flipped off, logs vanished) — retreat to the usage view.
+        if (current_screen == SCREEN_CODEX) ui_show_screen(SCREEN_USAGE);
+        return;
+    }
+
+    int c1 = (int)(data->codex_pct + 0.5f);
+    lv_label_set_text(lbl_codex1_label, window_pill_text(data->codex_window_mins));
+    lv_label_set_text_fmt(lbl_codex1_pct, "%d%%", c1);
+    lv_bar_set_value(bar_codex1, c1, LV_ANIM_ON);
+    lv_obj_set_style_bg_color(bar_codex1, pct_color(data->codex_pct), LV_PART_INDICATOR);
+    format_reset_time(data->codex_reset_mins, buf, sizeof(buf));
+    lv_label_set_text(lbl_codex1_reset, buf);
+
+    // Second panel slot: the plan's secondary rate window when it has one
+    // (5h + weekly plans), otherwise the Daily panel — today's total tokens
+    // measured against the 7-day daily average (Codex exposes no daily rate
+    // limit, so the average is the only meaningful daily yardstick; bar full
+    // = 2x the average day).
+    if (data->codex_pct2 >= 0.0f) {
+        int c2 = (int)(data->codex_pct2 + 0.5f);
+        lv_label_set_text(lbl_codex2_label, window_pill_text(data->codex_window_mins2));
+        lv_label_set_text_fmt(lbl_codex2_pct, "%d%%", c2);
+        lv_bar_set_value(bar_codex2, c2, LV_ANIM_ON);
+        lv_obj_set_style_bg_color(bar_codex2, pct_color(data->codex_pct2), LV_PART_INDICATOR);
+        format_reset_time(data->codex_reset_mins2, buf, sizeof(buf));
+        lv_label_set_text(lbl_codex2_reset, buf);
+        lv_obj_clear_flag(panel_codex2, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(panel_codex_daily, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        long today_total = data->codex_tokens_in + data->codex_tokens_out;
+        char tbuf[16];
+        format_tokens(today_total, tbuf, sizeof(tbuf));
+        lv_label_set_text(lbl_codex_daily_val, tbuf);
+        int fill = 0;
+        if (data->codex_day_avg > 0)
+            fill = (int)((today_total * 50) / data->codex_day_avg);  // avg day = 50%
+        if (fill > 100) fill = 100;
+        lv_bar_set_value(bar_codex_daily, fill, LV_ANIM_ON);
+        lv_obj_set_style_bg_color(bar_codex_daily, pct_color((float)fill), LV_PART_INDICATOR);
+        if (data->codex_day_avg > 0) {
+            format_tokens(data->codex_day_avg, tbuf, sizeof(tbuf));
+            snprintf(buf, sizeof(buf), "7-day avg %s/day", tbuf);
+        } else {
+            snprintf(buf, sizeof(buf), "No 7-day history");
+        }
+        lv_label_set_text(lbl_codex_daily_sub, buf);
+        lv_obj_clear_flag(panel_codex_daily, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(panel_codex2, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 // Pick the usage-view sub-screen: pairing hint (BLE down), the idle "Zzz" screen
@@ -699,7 +859,17 @@ static void update_view_state(void) {
 }
 
 void ui_tick_anim(void) {
-    if (current_screen != SCREEN_USAGE) return;
+    // The Codex view shows live numbers only: once the link drops or data goes
+    // stale, retreat to the usage view, whose pair/idle sub-views own those
+    // states. While live it runs the same animated status line as the usage
+    // view (into its own white label — see the bottom of this function).
+    if (current_screen == SCREEN_CODEX) {
+        bool fresh = s_ble_connected && data_received && data_ok &&
+                     (lv_tick_get() - last_data_ms) < DATA_FRESH_MS;
+        if (!fresh) { ui_show_screen(SCREEN_USAGE); return; }
+    } else if (current_screen != SCREEN_USAGE) {
+        return;
+    }
     update_view_state();
     if (view_state == 1) splash_mini_tick();   // animate the sleeping creature on the idle screen
 
@@ -753,7 +923,8 @@ void ui_tick_anim(void) {
     static char buf[80];
     snprintf(buf, sizeof(buf), "%s %s\xE2\x80\xA6",
              spinner_frames[anim_spinner_idx], text);
-    lv_label_set_text(lbl_anim, buf);
+    lv_label_set_text(current_screen == SCREEN_CODEX ? lbl_codex_anim : lbl_anim,
+                      buf);
 }
 
 static screen_t prev_non_splash_screen = SCREEN_USAGE;
@@ -765,25 +936,40 @@ static void apply_battery_visibility(void) {
 
 static void global_click_cb(lv_event_t* e) {
     (void)e;
-    if (current_screen == SCREEN_SPLASH) ui_show_screen(prev_non_splash_screen);
-    else                                  ui_show_screen(SCREEN_SPLASH);
+    // Tap cycle: Splash -> Usage -> (Codex when live data carries it) -> Splash.
+    // Without Codex data this stays the original Splash <-> Usage toggle.
+    if (current_screen == SCREEN_SPLASH) {
+        ui_show_screen(SCREEN_USAGE);
+    } else if (current_screen == SCREEN_USAGE && codex_data_seen && view_state == 2) {
+        ui_show_screen(SCREEN_CODEX);
+    } else {
+        ui_show_screen(SCREEN_SPLASH);
+    }
 }
 
 void ui_show_screen(screen_t screen) {
     lv_obj_add_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(codex_container, LV_OBJ_FLAG_HIDDEN);
     splash_hide();
 
     switch (screen) {
     case SCREEN_SPLASH:  splash_show(); break;
     case SCREEN_USAGE:   lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN); break;
+    case SCREEN_CODEX:   lv_obj_clear_flag(codex_container, LV_OBJ_FLAG_HIDDEN); break;
     default: break;
     }
 
-    splash_mascot_set_visible(screen != SCREEN_SPLASH);
+    // Corner logo: Clawd mascot everywhere except splash (no corner art) and
+    // the Codex screen, where the OpenAI mark takes the slot.
+    splash_mascot_set_visible(screen != SCREEN_SPLASH && screen != SCREEN_CODEX);
     if (logo_img) {
-        if (screen == SCREEN_SPLASH) lv_obj_add_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
-        else                          lv_obj_clear_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
+        if (screen == SCREEN_SPLASH || screen == SCREEN_CODEX)
+            lv_obj_add_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_clear_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
     }
+    if (screen == SCREEN_CODEX) lv_obj_clear_flag(openai_img, LV_OBJ_FLAG_HIDDEN);
+    else                        lv_obj_add_flag(openai_img, LV_OBJ_FLAG_HIDDEN);
 
     if (screen != SCREEN_SPLASH) prev_non_splash_screen = screen;
     current_screen = screen;

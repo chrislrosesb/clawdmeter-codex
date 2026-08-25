@@ -119,6 +119,21 @@ static bool parse_json(const char* json, UsageData* out) {
     strlcpy(out->reset_date, doc["rd"] | "", sizeof(out->reset_date));
     out->clock_epoch = doc["t"] | 0L;
     out->clock_fmt = doc["tf"] | 24;
+
+    JsonVariantConst x = doc["x"];   // optional Codex (OpenAI) usage object
+    out->codex_valid = !x.isNull();
+    if (out->codex_valid) {
+        out->codex_pct          = x["p"]   | 0.0f;
+        out->codex_reset_mins   = x["rm"]  | -1;
+        out->codex_window_mins  = x["wm"]  | 0;
+        out->codex_pct2         = x["p2"]  | -1.0f;
+        out->codex_reset_mins2  = x["rm2"] | -1;
+        out->codex_window_mins2 = x["wm2"] | 0;
+        out->codex_tokens_in    = x["ti"]  | 0L;
+        out->codex_tokens_out   = x["to"]  | 0L;
+        out->codex_day_avg      = x["da"]  | 0L;
+    }
+
     out->ok = doc["ok"] | false;
     out->valid = true;
     return true;
