@@ -4,6 +4,8 @@
 
 A small ESP32 dashboard I made for my desk to keep an eye on Claude Code usage.
 
+> **About this fork:** this is a fork of [Clawdmeter](https://github.com/HermannBjorgvin/Clawdmeter) by [HermannBjorgvin](https://github.com/HermannBjorgvin). Upstream keeps its scope to Anthropic usage only, so this fork exists to carry the optional Codex (OpenAI) usage screen proposed in [upstream PR #158](https://github.com/HermannBjorgvin/Clawdmeter/pull/158); everything else tracks upstream. All credit for the project belongs upstream, and its [licensing gray area warning](#licensing-gray-area-warning) about bundled proprietary fonts and copyrighted assets applies here just the same.
+
 It runs on a [Waveshare ESP32-S3-Touch-AMOLED-2.16](https://www.waveshare.com/esp32-s3-touch-amoled-2.16.htm?&aff_id=149786) as well as a few other alternative boards and pairs over Bluetooth, the splash screen plays pixel-art Clawd animations that get
 busier when your usage rate climbs. The two side buttons send Space and
 Shift+Tab over BLE HID for Claude Code's voice mode and mode-toggle shortcuts.
