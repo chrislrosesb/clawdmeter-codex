@@ -12,12 +12,12 @@ Shift+Tab over BLE HID for Claude Code's voice mode and mode-toggle shortcuts.
 
 ## Screens
 
-The device boots into the splash. Tap the screen anywhere to switch to the Usage view; tap again to flip back to the splash.
+The device boots into the splash. Tap the screen anywhere to switch to the Usage view; tap again to flip back to the splash. If the host also runs [Codex CLI](https://github.com/openai/codex), a Codex screen joins the tap cycle (Splash, Usage, Codex) showing its rate-limit windows and today's tokens against your 7-day average, read passively from Codex's local session logs with no OpenAI network calls or auth. Hosts without Codex keep the two-screen behavior; `codex = off` in the daemon config hides it explicitly.
 
-|              Splash               |              Usage              |
-| :-------------------------------: | :-----------------------------: |
-| ![Splash](screenshots/splash.gif) | ![Usage](screenshots/usage.png) |
-|   Splash; touch-toggle anytime    | Session and weekly utilization  |
+|              Splash               |              Usage              |             Codex (optional)              |
+| :-------------------------------: | :-----------------------------: | :---------------------------------------: |
+| ![Splash](screenshots/splash.gif) | ![Usage](screenshots/usage.png) |      ![Codex](screenshots/codex.png)      |
+|   Splash; touch-toggle anytime    | Session and weekly utilization  | Codex rate limits and daily token pace    |
 
 While the splash is up, the middle (PWR) button cycles animations. **Hold the power button for 3 seconds, then release, to put the device into pairing mode** — this clears the saved Bluetooth bond and re-advertises. The firmware also auto-rotates animations every 20 s within the current usage-rate group, so a long stretch on the splash isn't just one Clawd on loop.
 
