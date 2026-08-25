@@ -24,6 +24,11 @@ import httpx
 from bleak import BleakClient
 from bleak.exc import BleakError
 
+try:
+    from daemon import codex_source  # package context (tests)
+except ImportError:
+    import codex_source  # script context (launchd/systemd run the file directly)
+
 DEVICE_NAME = "Clawdmeter"
 SERVICE_UUID = "4c41555a-4465-7669-6365-000000000001"
 RX_CHAR_UUID = "4c41555a-4465-7669-6365-000000000002"
@@ -361,6 +366,45 @@ def add_chime_field(payload: dict) -> None:
     sound the session-reset chime. Omitted entirely when chime is off."""
     if read_chime_setting() == "on":
         payload["c"] = 1
+
+
+def read_codex_setting() -> str:
+    """Read the `codex` option from the config file. One of: on|off.
+
+    Defaults to "on": the Codex source is a passive local-log read that
+    returns nothing when Codex CLI isn't installed, so auto-detection is safe
+    and zero-config. "off" hides the Codex screen for hosts that have Codex
+    installed but don't want it on the device.
+    """
+    try:
+        if CONFIG_FILE.exists():
+            for line in CONFIG_FILE.read_text().splitlines():
+                line = line.split("#", 1)[0].strip()
+                if "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                if key.strip().lower() == "codex":
+                    val = val.strip().lower()
+                    if val in ("off", "on"):
+                        return val
+    except OSError:
+        pass
+    return "on"
+
+
+def add_codex_field(payload: dict) -> None:
+    """Attach "x" (Codex/OpenAI usage read from local Codex CLI session logs)
+    unless the config opts out. Omitted entirely when Codex isn't installed,
+    has no usable data, or the read fails — old firmware ignores the key."""
+    if read_codex_setting() == "off":
+        return
+    try:
+        codex = codex_source.codex_payload()
+    except Exception as e:  # a source bug must never take down the Claude path
+        log(f"Codex source failed: {e}")
+        return
+    if codex:
+        payload["x"] = codex
 
 
 def detect_hour_format() -> int:
@@ -765,6 +809,7 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
                 # numbers until the CLI re-seeds it.
                 payload, dead = await poll_active()
                 if payload is not None:
+                    add_codex_field(payload)   # adds "x" iff local Codex data exists
                     if await session.write_payload(payload):
                         last_poll = time.time()
                         used_successfully = True
