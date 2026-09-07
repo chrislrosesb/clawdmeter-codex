@@ -15,9 +15,11 @@ import os
 import re
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import time
+import zlib
 from pathlib import Path
 
 import httpx
@@ -26,8 +28,21 @@ from bleak.exc import BleakError
 
 try:
     from daemon import codex_source  # package context (tests)
+    from daemon import pluribus_activity as pluribus_source
 except ImportError:
     import codex_source  # script context (launchd/systemd run the file directly)
+    import pluribus_activity as pluribus_source
+
+if sys.platform == "darwin":
+    try:
+        from daemon import now_playing as now_playing_source
+    except ImportError:
+        try:
+            import now_playing as now_playing_source
+        except ImportError:
+            now_playing_source = None
+else:
+    now_playing_source = None
 
 DEVICE_NAME = "Clawdmeter"
 SERVICE_UUID = "4c41555a-4465-7669-6365-000000000001"
@@ -37,6 +52,14 @@ REQ_CHAR_UUID = "4c41555a-4465-7669-6365-000000000004"
 POLL_INTERVAL = 60
 TICK = 5
 CONNECT_TIMEOUT = 20.0
+MUSIC_POLL_INTERVAL = 5.0
+PLURIBUS_POLL_INTERVAL = 15.0
+ART_MAGIC = 0xA5
+ART_START = 0x01
+ART_CHUNK = 0x02
+ART_ENCODING_RGB565 = 0
+ART_ENCODING_JPEG = 1
+ART_CHUNK_DATA = 232  # 240-byte GATT write including our 8-byte chunk header
 
 # macOS: token lives in Keychain (service "Claude Code-credentials").
 # Linux: token lives in ~/.claude/.credentials.json.
@@ -395,6 +418,24 @@ def read_codex_setting() -> str:
     return "on"
 
 
+def read_now_playing_setting() -> str:
+    """Read ``now_playing = on|off``; opt-in protects older firmware."""
+    try:
+        if CONFIG_FILE.exists():
+            for line in CONFIG_FILE.read_text().splitlines():
+                line = line.split("#", 1)[0].strip()
+                if "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                if key.strip().lower() == "now_playing":
+                    val = val.strip().lower()
+                    if val in ("off", "on"):
+                        return val
+    except OSError:
+        pass
+    return "off"
+
+
 def add_codex_field(payload: dict) -> None:
     """Attach "x" (Codex/OpenAI usage read from local Codex CLI session logs)
     unless the config opts out. Omitted entirely when Codex isn't installed,
@@ -639,6 +680,7 @@ class Session:
     def __init__(self, client: BleakClient) -> None:
         self.client = client
         self.refresh_requested = asyncio.Event()
+        self.write_lock = asyncio.Lock()
 
     def _on_refresh(self, _char, _data: bytearray) -> None:
         log("Refresh requested by device")
@@ -664,12 +706,54 @@ class Session:
 
     async def write_payload(self, payload: dict) -> bool:
         data = json.dumps(payload, separators=(",", ":")).encode()
+        if len(data) >= 512:
+            log(f"Refusing oversized JSON payload ({len(data)} bytes)")
+            return False
         log(f"Sending: {data.decode()}")
         try:
-            await self.client.write_gatt_char(RX_CHAR_UUID, data, response=False)
+            async with self.write_lock:
+                await self.client.write_gatt_char(RX_CHAR_UUID, data, response=False)
             return True
-        except BleakError as e:
+        except (BleakError, OSError) as e:
             log(f"Write failed: {e}")
+            return False
+
+    async def write_artwork(self, frame: bytes, generation: int,
+                            width: int = 300, height: int = 300,
+                            encoding: int = ART_ENCODING_JPEG) -> bool:
+        raw_size = width * height * 2
+        valid = (
+            encoding == ART_ENCODING_RGB565 and len(frame) == raw_size
+        ) or (
+            encoding == ART_ENCODING_JPEG and len(frame) >= 4 and
+            frame.startswith(b"\xff\xd8") and frame.endswith(b"\xff\xd9") and
+            len(frame) <= raw_size
+        )
+        if not valid:
+            log(f"Invalid artwork frame ({len(frame)} bytes, encoding {encoding})")
+            return False
+        generation &= 0xFFFF
+        start = struct.pack(
+            "<BBHHHBII", ART_MAGIC, ART_START, generation, width, height,
+            encoding, len(frame), zlib.crc32(frame) & 0xFFFFFFFF,
+        )
+        started = time.monotonic()
+        try:
+            async with self.write_lock:
+                await self.client.write_gatt_char(RX_CHAR_UUID, start, response=True)
+                for offset in range(0, len(frame), ART_CHUNK_DATA):
+                    packet = struct.pack(
+                        "<BBHI", ART_MAGIC, ART_CHUNK, generation, offset,
+                    ) + frame[offset:offset + ART_CHUNK_DATA]
+                    await self.client.write_gatt_char(RX_CHAR_UUID, packet, response=True)
+                    if offset % (ART_CHUNK_DATA * 32) == 0:
+                        await asyncio.sleep(0)
+            elapsed = time.monotonic() - started
+            kind = "JPEG" if encoding == ART_ENCODING_JPEG else "RGB565"
+            log(f"Artwork sent ({width}x{height} {kind}, {len(frame)} bytes, {elapsed:.1f}s)")
+            return True
+        except (BleakError, OSError) as e:
+            log(f"Artwork transfer failed: {e}")
             return False
 
 
@@ -796,6 +880,11 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
     await session.setup_refresh_subscription()
 
     last_poll = 0.0
+    next_music_poll = 0.0
+    next_pluribus_poll = 0.0
+    last_music_id: str | None = None
+    music_was_playing = False
+    last_pluribus_payload: object = object()
     used_successfully = False
     try:
         while client.is_connected and not stop_event.is_set():
@@ -831,8 +920,71 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
                     # cycle) -> stay silent and retry next tick.
                     log("No usable config dir this cycle")
 
+            # Apple Music is intentionally independent of Claude polling. A
+            # source/permission/artwork failure can only suppress this optional
+            # screen; it never changes the usage payload or its timestamps.
+            music_enabled = (
+                now_playing_source is not None and
+                read_now_playing_setting() == "on"
+            )
+            if music_enabled and now >= next_music_poll:
+                next_music_poll = now + MUSIC_POLL_INTERVAL
+                try:
+                    track = await asyncio.to_thread(now_playing_source.query)
+                except Exception as e:
+                    log(f"Now Playing source failed: {e}")
+                    next_music_poll = now + 60.0
+                    track = None
+
+                if track is None:
+                    if music_was_playing:
+                        await session.write_payload({"np": {"p": 0}})
+                    music_was_playing = False
+                    last_music_id = None
+                else:
+                    metadata_ok = await session.write_payload(track.wire_payload())
+                    if metadata_ok:
+                        used_successfully = True
+                    music_was_playing = True
+                    if track.track_id != last_music_id:
+                        last_music_id = track.track_id
+                        try:
+                            frame = await asyncio.to_thread(now_playing_source.artwork, track)
+                        except Exception as e:
+                            log(f"Artwork preparation failed: {e}")
+                            frame = None
+                        if frame:
+                            generation = int(track.track_id[:4], 16)
+                            await session.write_artwork(frame, generation)
+                            # Refresh the timestamp/progress after a potentially
+                            # multi-second transfer, whether or not it succeeded.
+                            fresh_track = await asyncio.to_thread(now_playing_source.query)
+                            if fresh_track and fresh_track.track_id == track.track_id:
+                                await session.write_payload(fresh_track.wire_payload())
+            elif not music_enabled and music_was_playing:
+                await session.write_payload({"np": {"p": 0}})
+                music_was_playing = False
+                last_music_id = None
+
+            # Pluribus is another independent local source. Its authenticated
+            # HTTP request runs off the asyncio event loop, and an unavailable
+            # or malformed response intentionally emits no BLE update so the
+            # firmware can retain and locally age its last valid activity.
+            if now >= next_pluribus_poll:
+                next_pluribus_poll = now + PLURIBUS_POLL_INTERVAL
+                try:
+                    result = await asyncio.to_thread(pluribus_source.fetch_latest)
+                except Exception as e:
+                    # Never include resolved config or the bearer token here.
+                    log(f"Pluribus activity source failed: {type(e).__name__}")
+                    result = pluribus_source.PollResult(False)
+                if result.available and result.payload != last_pluribus_payload:
+                    if await session.write_payload(result.payload):
+                        last_pluribus_payload = result.payload
+                        used_successfully = True
+
             try:
-                await asyncio.wait_for(session.refresh_requested.wait(), timeout=TICK)
+                await asyncio.wait_for(session.refresh_requested.wait(), timeout=1.0)
             except asyncio.TimeoutError:
                 pass
     finally:
@@ -861,6 +1013,8 @@ async def main() -> None:
 
     log("=== Claude Usage Tracker Daemon (BLE, macOS) ===")
     log(f"Poll interval: {POLL_INTERVAL}s")
+    if sys.platform == "darwin" and read_now_playing_setting() == "on" and now_playing_source is None:
+        log("Now Playing unavailable: install Pillow and rerun install-mac.sh")
 
     backoff = 1
     skip_addr: str | None = None  # macOS: a peripheral to skip for one cycle

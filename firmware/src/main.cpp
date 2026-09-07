@@ -22,6 +22,8 @@
 #include "hal/sound_hal.h"
 
 static UsageData usage = {};
+static NowPlayingData now_playing = {};
+static PluribusActivityData pluribus_activity = {};
 
 // ---- LVGL draw buffers (partial render mode) ----
 // PSRAM-equipped boards (S3) can comfortably hold larger strips. PSRAM-free
@@ -136,6 +138,61 @@ static bool parse_json(const char* json, UsageData* out) {
 
     out->ok = doc["ok"] | false;
     out->valid = true;
+    return true;
+}
+
+// Parse a standalone now-playing update. ``recognized`` distinguishes a
+// malformed music update from an ordinary usage payload, preserving backward
+// compatibility with every existing daemon payload.
+static bool parse_now_playing_json(const char* json, NowPlayingData* out,
+                                   bool* recognized) {
+    *recognized = false;
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, json);
+    if (err) return false;
+    JsonVariantConst np = doc["np"];
+    if (np.isNull()) return true;
+    *recognized = true;
+    out->playing = (np["p"] | 0) != 0;
+    strlcpy(out->title, np["t"] | "", sizeof(out->title));
+    strlcpy(out->artist, np["a"] | "", sizeof(out->artist));
+    strlcpy(out->album, np["l"] | "", sizeof(out->album));
+    out->duration_sec = np["d"] | 0;
+    out->elapsed_sec = np["e"] | 0;
+    out->artwork_generation = np["g"] | 0;
+    return true;
+}
+
+// Parse a standalone Pluribus update. This explicit top-level dispatch keeps
+// {"pb":...} from ever falling through to the normal usage parser.
+static bool parse_pluribus_json(const char* json, PluribusActivityData* out,
+                                bool* recognized) {
+    *recognized = false;
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, json);
+    if (err) return false;
+    JsonVariantConst pb = doc["pb"];
+    if (pb.isUnbound()) return true;
+    *recognized = true;
+    if (pb.isNull()) {
+        *out = {};
+        out->present = false;
+        return true;
+    }
+    if (!pb.is<JsonObjectConst>() || !pb["id"].is<int64_t>() ||
+        !pb["a"].is<uint32_t>()) return false;
+    const char* status = pb["s"] | "";
+    const char* title = pb["t"] | "";
+    if (!title[0] || (strcmp(status, "success") != 0 &&
+                      strcmp(status, "needs_review") != 0 &&
+                      strcmp(status, "failed") != 0)) return false;
+    out->present = true;
+    out->id = pb["id"].as<int64_t>();
+    strlcpy(out->kind, pb["k"] | "", sizeof(out->kind));
+    strlcpy(out->status, status, sizeof(out->status));
+    strlcpy(out->title, title, sizeof(out->title));
+    strlcpy(out->detail, pb["d"] | "", sizeof(out->detail));
+    out->age_minutes = pb["a"].as<uint32_t>();
     return true;
 }
 
@@ -304,6 +361,7 @@ void loop() {
     idle_tick();
     lv_timer_handler();
     ui_tick_anim();
+    ui_tick_screen_rotation();
     ble_tick();
     power_hal_tick();
     imu_hal_tick();
@@ -386,8 +444,24 @@ void loop() {
 
     check_serial_cmd();
 
+    BleArtwork artwork;
+    if (ble_take_artwork(&artwork)) ui_update_artwork(&artwork);
+
     if (ble_has_data()) {
-        if (parse_json(ble_get_data(), &usage)) {
+        const char* incoming = ble_get_data();
+        bool music_message = false;
+        bool pluribus_message = false;
+        if (!parse_pluribus_json(incoming, &pluribus_activity, &pluribus_message)) {
+            ble_send_nack();
+        } else if (pluribus_message) {
+            ui_update_pluribus(&pluribus_activity);
+            ble_send_ack();
+        } else if (!parse_now_playing_json(incoming, &now_playing, &music_message)) {
+            ble_send_nack();
+        } else if (music_message) {
+            ui_update_now_playing(&now_playing);
+            ble_send_ack();
+        } else if (parse_json(incoming, &usage)) {
             int g_before = usage_rate_group();
             bool session_reset = usage_rate_sample(usage.session_pct);
             int g_after = usage_rate_group();

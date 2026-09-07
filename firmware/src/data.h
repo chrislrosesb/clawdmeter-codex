@@ -31,3 +31,23 @@ struct UsageData {
     long  codex_tokens_out;    // today's output tokens
     long  codex_day_avg;       // avg total tokens/day over the prior 7 days; 0 = no history
 };
+
+struct NowPlayingData {
+    bool playing;
+    char title[64];
+    char artist[64];
+    char album[64];
+    int duration_sec;
+    int elapsed_sec;
+    uint16_t artwork_generation;
+};
+
+struct PluribusActivityData {
+    bool present;
+    int64_t id;
+    char kind[21];
+    char status[17];
+    char title[65];
+    char detail[65];
+    uint32_t age_minutes;
+};

@@ -6,12 +6,18 @@ enum screen_t {
     SCREEN_SPLASH,
     SCREEN_USAGE,
     SCREEN_CODEX,
+    SCREEN_NOW_PLAYING,
+    SCREEN_PLURIBUS,
     SCREEN_COUNT,
 };
 
 void ui_init(void);
 void ui_update(const UsageData* data);
+void ui_update_now_playing(const NowPlayingData* data);
+void ui_update_pluribus(const PluribusActivityData* data);
+void ui_update_artwork(const BleArtwork* artwork);
 void ui_tick_anim(void);
+void ui_tick_screen_rotation(void);
 void ui_show_screen(screen_t screen);
 void ui_toggle_splash(void);
 screen_t ui_get_current_screen(void);

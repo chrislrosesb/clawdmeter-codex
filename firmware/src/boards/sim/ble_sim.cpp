@@ -26,6 +26,9 @@ static bool     playing = true;
 static bool     connected = true;
 static bool     pending = false;      // a state is queued for main's next poll
 static uint32_t delivered_ms = 0;
+static uint16_t fake_art[300 * 300];
+static uint16_t fake_art_generation = 0;
+static bool fake_art_ready = false;
 
 static const char* FALLBACK[] = {
     "{\"name\":\"fresh\",\"s\":3.0,\"sr\":295,\"w\":12.0,\"wr\":9000,\"st\":\"allowed\",\"ok\":true}",
@@ -113,12 +116,41 @@ bool ble_has_data(void) { return connected && pending; }
 const char* ble_get_data(void) {
     pending = false;
     delivered_ms = millis();
+    JsonDocument doc;
+    if (deserializeJson(doc, states[cur].json) == DeserializationError::Ok &&
+        !doc["np"].isNull() && (doc["np"]["p"] | 0)) {
+        fake_art_generation = doc["np"]["g"] | 0;
+        for (int y = 0; y < 300; ++y) {
+            for (int x = 0; x < 300; ++x) {
+                // Synthetic neon-night cover: enough structure to verify crop,
+                // placement, color order, and text contrast in screenshots.
+                uint8_t r = (uint8_t)((x * 90 / 300) + (y > 205 ? 95 : 10));
+                uint8_t g = (uint8_t)((y * 35 / 300) + (y > 205 ? 25 : 5));
+                uint8_t b = (uint8_t)(70 + x * 150 / 300);
+                if ((x / 24 + y / 31) % 7 == 0) r = 230, g = 82, b = 72;
+                fake_art[y * 300 + x] = ((r & 0xF8) << 8) |
+                                          ((g & 0xFC) << 3) | (b >> 3);
+            }
+        }
+        fake_art_ready = true;
+    }
     return states[cur].json;
 }
 void ble_send_ack(void)  {}
 void ble_send_nack(void) { printf("[sim] payload NACKed — check the scenario JSON\n"); }
 void ble_request_refresh(void) {}
 void ble_set_battery_level(int pct) { (void)pct; }
+bool ble_take_artwork(BleArtwork* out) {
+    if (!fake_art_ready || !out) return false;
+    fake_art_ready = false;
+    out->pixels = (const uint8_t*)fake_art;
+    out->size = 300 * 300 * 2;
+    out->width = 300;
+    out->height = 300;
+    out->generation = fake_art_generation;
+    out->encoding = BLE_ART_RGB565;
+    return true;
+}
 
 void ble_keyboard_press(uint8_t key, uint8_t modifier) {
     printf("[sim] HID press key=0x%02X mod=0x%02X\n", key, modifier);

@@ -1,7 +1,9 @@
 #include "sim_platform.h"
+#include "../../ui.h"
 #include <SDL.h>
 #include <Arduino.h>
 #include <stdlib.h>
+#include <string.h>
 
 static bool quit = false;
 
@@ -72,5 +74,17 @@ void sim_pump(void) {
         sim_display_screenshot(p ? p : "sim-autoshot.bmp");
         quit = true;
         autoshot_ms = -1;
+    }
+
+    // Headless visual-test hook: select a view after setup and after the first
+    // scenario payload has been consumed.
+    static bool initial_screen_applied = false;
+    if (!initial_screen_applied && millis() >= 250) {
+        const char* screen = getenv("SIM_INITIAL_SCREEN");
+        if (screen && strcmp(screen, "music") == 0)
+            ui_show_screen(SCREEN_NOW_PLAYING);
+        else if (screen && strcmp(screen, "pluribus") == 0)
+            ui_show_screen(SCREEN_PLURIBUS);
+        initial_screen_applied = true;
     }
 }

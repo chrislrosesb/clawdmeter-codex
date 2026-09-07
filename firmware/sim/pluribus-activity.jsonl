@@ -1,0 +1,4 @@
+{"name":"filed","hold_ms":5000,"pb":{"id":41,"k":"transcript","s":"success","t":"Transcript filed","d":"Customer discovery notes","a":3}}
+{"name":"review","hold_ms":5000,"pb":{"id":42,"k":"voice note","s":"needs_review","t":"Transcript needs review","d":"Sunday evening reflection","a":18}}
+{"name":"attention","hold_ms":5000,"pb":{"id":43,"k":"transcript","s":"failed","t":"Transcript needs attention","d":"Office whiteboard capture","a":67}}
+{"name":"clear","hold_ms":3000,"pb":null}

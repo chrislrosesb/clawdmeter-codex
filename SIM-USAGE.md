@@ -62,6 +62,24 @@ States: 0 starting · 1 idle · 2 thinking · 3 responding · 4 running-tool ·
 Override the scenario file with `SIM_SCENARIO=<path>`. If the file is missing,
 a small built-in state list is used.
 
+The repository includes `sim/now-playing.jsonl` for the optional Apple Music
+view. Set `SIM_INITIAL_SCREEN=music` to select that view after the first
+scenario update, which is useful for headless visual checks.
+
+`sim/pluribus-activity.jsonl` exercises success, review, failure, and explicit
+clear messages for the optional Pluribus activity view. Select it directly for
+a visual check:
+
+```bash
+cd firmware
+SIM_SCENARIO=sim/pluribus-activity.jsonl SIM_INITIAL_SCREEN=pluribus \
+  pio run -e sim -t exec
+```
+
+The Pluribus payload is dispatched independently from usage and Now Playing.
+It remains in the 30-second carousel for 24 hours from its server timestamp;
+an explicit `{"pb":null}` removes it immediately.
+
 ## Headless screenshots (CI-friendly)
 
 ```bash

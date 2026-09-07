@@ -3,6 +3,7 @@
 #include <NimBLEDevice.h>
 #include <NimBLEHIDDevice.h>
 #include <Preferences.h>
+#include <esp_heap_caps.h>
 
 #define DEVICE_NAME "Clawdmeter"
 
@@ -13,6 +14,11 @@
 #define REQ_CHAR_UUID       "4c41555a-4465-7669-6365-000000000004"  // device-initiated refresh request
 
 #define BLE_BUF_SIZE 512
+#define ART_MAGIC 0xA5
+#define ART_START 0x01
+#define ART_CHUNK 0x02
+#define ART_MAX_SIDE 320
+#define ART_MAX_BYTES (ART_MAX_SIDE * ART_MAX_SIDE * 2)
 
 // HID keyboard report descriptor (standard 6-KRO boot-protocol-compatible).
 // Includes the LED output report (Num/Caps/Scroll Lock indicators) — without
@@ -76,6 +82,109 @@ static char rx_buf[BLE_BUF_SIZE];
 static volatile bool data_ready = false;
 static volatile bool has_received_data = false;
 static char mac_str[18];
+
+#ifdef BOARD_HAS_PSRAM
+static uint8_t* art_buf[2] = {nullptr, nullptr};
+static volatile int art_active = 0;
+static volatile int art_receiving = 1;
+static volatile bool art_ready = false;
+static uint16_t art_generation = 0;
+static uint16_t art_width = 0;
+static uint16_t art_height = 0;
+static uint32_t art_expected = 0;
+static uint32_t art_received = 0;
+static uint32_t art_expected_crc = 0;
+static BleArtworkEncoding art_encoding = BLE_ART_RGB565;
+#endif
+
+static uint16_t read_u16_le(const uint8_t* p) {
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static uint32_t read_u32_le(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static uint32_t crc32_bytes(const uint8_t* data, size_t len) {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; ++i) {
+        crc ^= data[i];
+        for (int bit = 0; bit < 8; ++bit)
+            crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)-(int32_t)(crc & 1));
+    }
+    return ~crc;
+}
+
+static void notify_artwork_status(bool ok, uint16_t generation) {
+    if (!tx_char) return;
+    char msg[40];
+    snprintf(msg, sizeof(msg), "{\"art\":%s,\"g\":%u}", ok ? "true" : "false", generation);
+    tx_char->setValue(msg);
+    tx_char->notify();
+}
+
+static void receive_artwork_packet(const uint8_t* data, size_t len) {
+#ifndef BOARD_HAS_PSRAM
+    (void)data; (void)len;
+#else
+    if (len < 2 || !art_buf[0] || !art_buf[1]) return;
+    const uint8_t type = data[1];
+    if (type == ART_START) {
+        // 16-byte starts are the original RGB565 protocol. New 17-byte starts
+        // carry an explicit encoding byte while retaining raw compatibility.
+        if (len != 16 && len != 17) return;
+        const uint16_t generation = read_u16_le(data + 2);
+        const uint16_t width = read_u16_le(data + 4);
+        const uint16_t height = read_u16_le(data + 6);
+        const uint8_t encoding = len == 17 ? data[8] : BLE_ART_RGB565;
+        const uint8_t* sizes = data + (len == 17 ? 9 : 8);
+        const uint32_t total = read_u32_le(sizes);
+        const uint32_t crc = read_u32_le(sizes + 4);
+        const bool valid_size =
+            (encoding == BLE_ART_RGB565 && total == (uint32_t)width * height * 2) ||
+            (encoding == BLE_ART_JPEG && total >= 4 && total <= ART_MAX_BYTES);
+        if (!width || !height || width > ART_MAX_SIDE || height > ART_MAX_SIDE ||
+            !valid_size || total > ART_MAX_BYTES) {
+            notify_artwork_status(false, generation);
+            return;
+        }
+        art_receiving = 1 - art_active;
+        art_generation = generation;
+        art_width = width;
+        art_height = height;
+        art_expected = total;
+        art_expected_crc = crc;
+        art_encoding = (BleArtworkEncoding)encoding;
+        art_received = 0;
+        art_ready = false;
+        return;
+    }
+    if (type != ART_CHUNK || len <= 8) return;
+    const uint16_t generation = read_u16_le(data + 2);
+    const uint32_t offset = read_u32_le(data + 4);
+    const size_t payload_len = len - 8;
+    if (generation != art_generation || offset != art_received ||
+        offset + payload_len > art_expected) {
+        notify_artwork_status(false, generation);
+        art_received = 0;
+        return;
+    }
+    memcpy(art_buf[art_receiving] + offset, data + 8, payload_len);
+    art_received += payload_len;
+    if (art_received == art_expected) {
+        const uint8_t* frame = art_buf[art_receiving];
+        const bool valid_jpeg = art_encoding != BLE_ART_JPEG ||
+            (frame[0] == 0xFF && frame[1] == 0xD8 &&
+             frame[art_expected - 2] == 0xFF && frame[art_expected - 1] == 0xD9);
+        const bool ok = valid_jpeg &&
+            crc32_bytes(frame, art_expected) == art_expected_crc;
+        if (ok) art_ready = true;
+        else art_received = 0;
+        notify_artwork_status(ok, generation);
+    }
+#endif
+}
 
 // --- Single-owner lock -----------------------------------------------------
 //
@@ -278,6 +387,10 @@ class RxCallbacks : public NimBLECharacteristicCallbacks {
             return;
         }
         std::string val = chr->getValue();
+        if (val.length() >= 2 && (uint8_t)val[0] == ART_MAGIC) {
+            receive_artwork_packet((const uint8_t*)val.data(), val.length());
+            return;
+        }
         size_t len = std::min(val.length(), (size_t)(BLE_BUF_SIZE - 1));
         memcpy(rx_buf, val.c_str(), len);
         rx_buf[len] = '\0';
@@ -301,6 +414,12 @@ class ReqCallbacks : public NimBLECharacteristicCallbacks {
 void ble_init(void) {
     NimBLEDevice::init(DEVICE_NAME);
     NimBLEDevice::setSecurityAuth(true, false, true);  // bonding, no MITM, SC
+
+#ifdef BOARD_HAS_PSRAM
+    art_buf[0] = (uint8_t*)heap_caps_malloc(ART_MAX_BYTES, MALLOC_CAP_SPIRAM);
+    art_buf[1] = (uint8_t*)heap_caps_malloc(ART_MAX_BYTES, MALLOC_CAP_SPIRAM);
+    if (!art_buf[0] || !art_buf[1]) Serial.println("BLE: artwork buffers unavailable");
+#endif
 
     // Restore the locked owner (if any) and drop any stale non-owner bonds so
     // the board stays paired to a single machine across reboots.
@@ -430,6 +549,24 @@ void ble_send_nack(void) {
         tx_char->setValue("{\"err\":true}");
         tx_char->notify();
     }
+}
+
+bool ble_take_artwork(BleArtwork* out) {
+#ifndef BOARD_HAS_PSRAM
+    (void)out;
+    return false;
+#else
+    if (!out || !art_ready) return false;
+    art_active = art_receiving;
+    art_ready = false;
+    out->pixels = art_buf[art_active];
+    out->size = art_expected;
+    out->width = art_width;
+    out->height = art_height;
+    out->generation = art_generation;
+    out->encoding = art_encoding;
+    return true;
+#endif
 }
 
 void ble_set_battery_level(int pct) {

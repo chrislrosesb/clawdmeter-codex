@@ -1,10 +1,12 @@
 #include "ui.h"
 #include "splash.h"
 #include <lvgl.h>
+#include <src/misc/cache/instance/lv_image_cache.h>
 #include <time.h>
 #include "logo.h"
 #include "clawd_still.h"
 #include "icons.h"
+#include "assets/pluribus_logo.h"
 #include "hal/board_caps.h"
 
 // Custom fonts (scaled for 314 PPI, ~1.9x from original 165 PPI)
@@ -241,9 +243,47 @@ static lv_obj_t* openai_img;               // corner mark shown on the Codex scr
 static lv_image_dsc_t openai_dsc;
 static bool      codex_data_seen = false;  // last live payload carried Codex data
 
+// ---- Apple Music now-playing screen (optional; Mac daemon only) ----
+static lv_obj_t* music_container = nullptr;
+static lv_obj_t* music_art = nullptr;
+static lv_obj_t* music_art_placeholder = nullptr;
+static lv_obj_t* lbl_music_title = nullptr;
+static lv_obj_t* lbl_music_artist = nullptr;
+static lv_obj_t* bar_music = nullptr;
+static lv_obj_t* lbl_music_elapsed = nullptr;
+static lv_obj_t* lbl_music_remaining = nullptr;
+static lv_image_dsc_t music_art_dsc = {};
+static bool music_screen_supported = false;
+static bool music_playing = false;
+static uint32_t music_last_update_ms = 0;
+static uint32_t music_progress_base_ms = 0;
+static int music_elapsed_base = 0;
+static int music_duration = 0;
+static uint16_t music_art_generation = 0;
+static uint16_t music_expected_generation = 0;
+static const uint32_t MUSIC_FRESH_MS = 30000;
+
+// ---- Pluribus recent-activity screen (local server, optional) ----
+static lv_obj_t* pluribus_container = nullptr;
+static lv_obj_t* pluribus_mark = nullptr;
+static lv_obj_t* lbl_pluribus_title = nullptr;
+static lv_obj_t* lbl_pluribus_detail = nullptr;
+static lv_obj_t* lbl_pluribus_status = nullptr;
+static lv_obj_t* lbl_pluribus_footer = nullptr;
+static lv_image_dsc_t pluribus_logo_dsc = {};
+static bool pluribus_screen_supported = false;
+static bool pluribus_present = false;
+static int64_t pluribus_id = -1;
+static uint32_t pluribus_received_ms = 0;
+static uint32_t pluribus_received_age = 0;
+static uint32_t pluribus_last_rendered_age = UINT32_MAX;
+static char pluribus_kind[21] = {};
+static const uint32_t PLURIBUS_EXPIRY_MINUTES = 24 * 60;
+
 // ---- Battery indicator (shared, on top) ----
 static lv_obj_t* battery_img;
 static lv_obj_t* logo_img;
+static bool      battery_present = false;
 static lv_image_dsc_t battery_dscs[5];  // empty, low, medium, full, charging
 
 // ---- Live-data freshness → which usage sub-view to show ----
@@ -260,6 +300,8 @@ static const uint32_t DATA_FRESH_MS = 90000;  // usage counts as "live" within t
 // ---- Shared ----
 static lv_image_dsc_t logo_dsc;
 static screen_t current_screen = SCREEN_USAGE;
+static uint32_t last_screen_change_ms = 0;
+static const uint32_t SCREEN_ROTATE_MS = 30000;
 static bool     s_ble_connected = false;   // cached BLE connection state
 static uint32_t connected_at_ms = 0;       // when we last entered CONNECTED ("Connected" dwell)
 
@@ -354,6 +396,11 @@ static void format_tokens(long v, char* buf, size_t len) {
 // Forward decls — callbacks defined near ui_show_screen below
 static void global_click_cb(lv_event_t* e);
 
+static void format_track_time(int seconds, char* buf, size_t len) {
+    if (seconds < 0) seconds = 0;
+    snprintf(buf, len, "%d:%02d", seconds / 60, seconds % 60);
+}
+
 static lv_obj_t* make_panel(lv_obj_t* parent, int x, int y, int w, int h) {
     lv_obj_t* panel = lv_obj_create(parent);
     lv_obj_set_pos(panel, x, y);
@@ -384,6 +431,77 @@ static lv_obj_t* make_bar(lv_obj_t* parent, int x, int y, int w, int h) {
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
     lv_obj_set_style_radius(bar, 6, LV_PART_INDICATOR);
     return bar;
+}
+
+// Small clock-dot overlaid on a usage bar. Its position is the fraction of
+// the rate-limit window that has elapsed, so the fill to its left/right shows
+// at a glance whether consumption is running ahead of or behind even pace.
+static lv_obj_t* make_clock_marker(lv_obj_t* parent) {
+    const int size = L.small_icons ? 16 : 28;
+    const int hand = L.small_icons ? 2 : 3;
+    const int inset = L.small_icons ? 3 : 5;
+    const int center = size / 2;
+
+    lv_obj_t* marker = lv_obj_create(parent);
+    lv_obj_set_size(marker, size, size);
+    lv_obj_set_style_radius(marker, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(marker, COL_ACCENT, 0);
+    lv_obj_set_style_bg_opa(marker, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(marker, COL_BG, 0);
+    lv_obj_set_style_border_width(marker, L.small_icons ? 2 : 3, 0);
+    lv_obj_set_style_pad_all(marker, 0, 0);
+    lv_obj_clear_flag(marker, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(marker, LV_OBJ_FLAG_CLICKABLE);
+
+    // Hands point to 9 and 12, matching the compact clock symbol in the
+    // reference UI without requiring another bitmap or font glyph.
+    lv_obj_t* minute_hand = lv_obj_create(marker);
+    lv_obj_set_size(minute_hand, hand, center - inset + 1);
+    lv_obj_set_pos(minute_hand, center - hand / 2, inset);
+    lv_obj_set_style_bg_color(minute_hand, COL_BG, 0);
+    lv_obj_set_style_bg_opa(minute_hand, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(minute_hand, 0, 0);
+    lv_obj_set_style_radius(minute_hand, hand, 0);
+    lv_obj_set_style_pad_all(minute_hand, 0, 0);
+    lv_obj_clear_flag(minute_hand, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(minute_hand, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t* hour_hand = lv_obj_create(marker);
+    lv_obj_set_size(hour_hand, center - inset + 1, hand);
+    lv_obj_set_pos(hour_hand, inset, center - hand / 2);
+    lv_obj_set_style_bg_color(hour_hand, COL_BG, 0);
+    lv_obj_set_style_bg_opa(hour_hand, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(hour_hand, 0, 0);
+    lv_obj_set_style_radius(hour_hand, hand, 0);
+    lv_obj_set_style_pad_all(hour_hand, 0, 0);
+    lv_obj_clear_flag(hour_hand, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(hour_hand, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_add_flag(marker, LV_OBJ_FLAG_HIDDEN);
+    return marker;
+}
+
+static void update_clock_marker(lv_obj_t* bar, int reset_mins, int window_mins) {
+    lv_obj_t* marker = bar ? (lv_obj_t*)lv_obj_get_user_data(bar) : nullptr;
+    if (!marker) return;
+    if (reset_mins < 0 || window_mins <= 0) {
+        lv_obj_add_flag(marker, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    int elapsed_mins = window_mins - reset_mins;
+    if (elapsed_mins < 0) elapsed_mins = 0;
+    if (elapsed_mins > window_mins) elapsed_mins = window_mins;
+
+    const int bar_w = L.content_w - 2 * L.panel_pad_x;
+    const int size = L.small_icons ? 16 : 28;
+    int center_x = (int)(((long)bar_w * elapsed_mins + window_mins / 2) / window_mins);
+    int x = center_x - size / 2;
+    if (x < 0) x = 0;
+    if (x > bar_w - size) x = bar_w - size;
+    lv_obj_set_pos(marker, x, L.usage_bar_y + (L.bar_h - size) / 2);
+    lv_obj_clear_flag(marker, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(marker);
 }
 
 static void init_icon_dsc_rgb565a8(lv_image_dsc_t* dsc, int w, int h, const uint8_t* data) {
@@ -541,6 +659,7 @@ static void init_usage_screen(lv_obj_t* scr) {
     panel_session = make_usage_panel(usage_group, L.content_y, "Current",
                      &lbl_session_pct, &lbl_session_label,
                      &bar_session, &lbl_session_reset);
+    lv_obj_set_user_data(bar_session, make_clock_marker(panel_session));
 
     // Enterprise-only overlays inside panel_session — hidden until enterprise data arrives
     lbl_session_pct_sym = lv_label_create(panel_session);
@@ -566,6 +685,7 @@ static void init_usage_screen(lv_obj_t* scr) {
                      L.content_y + L.usage_panel_h + L.usage_panel_gap, "Weekly",
                      &lbl_weekly_pct, &lbl_weekly_label,
                      &bar_weekly, &lbl_weekly_reset);
+    lv_obj_set_user_data(bar_weekly, make_clock_marker(panel_weekly));
     // Recolor enabled so enterprise period box can color pace and reset separately
     lv_label_set_recolor(lbl_weekly_reset, true);
 
@@ -606,6 +726,7 @@ static void init_codex_screen(lv_obj_t* scr) {
     panel_codex1 = make_usage_panel(codex_container, L.content_y, "Current",
                      &lbl_codex1_pct, &lbl_codex1_label,
                      &bar_codex1, &lbl_codex1_reset);
+    lv_obj_set_user_data(bar_codex1, make_clock_marker(panel_codex1));
 
     // The second slot holds either the plan's secondary rate window or the
     // Daily panel (one-window plans) — ui_update picks which is visible.
@@ -613,6 +734,7 @@ static void init_codex_screen(lv_obj_t* scr) {
     panel_codex2 = make_usage_panel(codex_container, slot2_y, "Weekly",
                      &lbl_codex2_pct, &lbl_codex2_label,
                      &bar_codex2, &lbl_codex2_reset);
+    lv_obj_set_user_data(bar_codex2, make_clock_marker(panel_codex2));
 
     panel_codex_daily = make_usage_panel(codex_container, slot2_y, "Daily",
                      &lbl_codex_daily_val, &lbl_codex_daily_label,
@@ -627,6 +749,184 @@ static void init_codex_screen(lv_obj_t* scr) {
     lv_obj_align(lbl_codex_anim, LV_ALIGN_BOTTOM_MID, 0, L.anim_y);
 
     lv_obj_add_flag(codex_container, LV_OBJ_FLAG_HIDDEN);  // ui_show_screen decides
+}
+
+static void init_music_screen(lv_obj_t* scr) {
+#ifdef BOARD_HAS_PSRAM
+    music_screen_supported = L.scr_w >= 400 && L.scr_h >= 450;
+#else
+    music_screen_supported = false;
+#endif
+    if (!music_screen_supported) return;
+
+    music_container = lv_obj_create(scr);
+    lv_obj_set_size(music_container, L.scr_w, L.scr_h);
+    lv_obj_set_pos(music_container, 0, 0);
+    lv_obj_set_style_bg_color(music_container, COL_BG, 0);
+    lv_obj_set_style_bg_opa(music_container, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(music_container, 0, 0);
+    lv_obj_set_style_pad_all(music_container, 0, 0);
+    lv_obj_clear_flag(music_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(music_container, global_click_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t* header = lv_label_create(music_container);
+    lv_label_set_text(header, "NOW PLAYING");
+    lv_obj_set_style_text_font(header, &font_styrene_16, 0);
+    lv_obj_set_style_text_color(header, COL_DIM, 0);
+    lv_obj_set_style_text_letter_space(header, 3, 0);
+    lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 17);
+
+    music_art_placeholder = lv_obj_create(music_container);
+    lv_obj_set_size(music_art_placeholder, 300, 300);
+    lv_obj_set_pos(music_art_placeholder, (L.scr_w - 300) / 2, 50);
+    lv_obj_set_style_bg_color(music_art_placeholder, COL_PANEL, 0);
+    lv_obj_set_style_bg_opa(music_art_placeholder, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(music_art_placeholder, 0, 0);
+    lv_obj_set_style_radius(music_art_placeholder, 20, 0);
+    lv_obj_clear_flag(music_art_placeholder, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(music_art_placeholder, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    music_art = lv_image_create(music_container);
+    lv_obj_set_pos(music_art, (L.scr_w - 300) / 2, 50);
+    lv_obj_add_flag(music_art, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(music_art, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    lbl_music_title = lv_label_create(music_container);
+    lv_obj_set_width(lbl_music_title, L.scr_w - 56);
+    lv_label_set_long_mode(lbl_music_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_label_set_text(lbl_music_title, "");
+    lv_obj_set_style_text_font(lbl_music_title, &font_styrene_28, 0);
+    lv_obj_set_style_text_color(lbl_music_title, COL_TEXT, 0);
+    lv_obj_set_style_text_align(lbl_music_title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(lbl_music_title, 28, 360);
+
+    lbl_music_artist = lv_label_create(music_container);
+    lv_obj_set_width(lbl_music_artist, L.scr_w - 56);
+    lv_label_set_long_mode(lbl_music_artist, LV_LABEL_LONG_DOT);
+    lv_label_set_text(lbl_music_artist, "");
+    lv_obj_set_style_text_font(lbl_music_artist, &font_styrene_20, 0);
+    lv_obj_set_style_text_color(lbl_music_artist, COL_DIM, 0);
+    lv_obj_set_style_text_align(lbl_music_artist, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(lbl_music_artist, 28, 397);
+
+    bar_music = lv_bar_create(music_container);
+    lv_obj_set_size(bar_music, L.scr_w - 64, 5);
+    lv_obj_set_pos(bar_music, 32, 434);
+    lv_bar_set_range(bar_music, 0, 1000);
+    lv_obj_set_style_bg_color(bar_music, COL_BAR_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(bar_music, COL_ACCENT, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(bar_music, 3, LV_PART_MAIN);
+    lv_obj_set_style_radius(bar_music, 3, LV_PART_INDICATOR);
+
+    lbl_music_elapsed = lv_label_create(music_container);
+    lbl_music_remaining = lv_label_create(music_container);
+    lv_obj_set_style_text_font(lbl_music_elapsed, &font_styrene_14, 0);
+    lv_obj_set_style_text_color(lbl_music_elapsed, COL_DIM, 0);
+    lv_obj_set_style_text_font(lbl_music_remaining, &font_styrene_14, 0);
+    lv_obj_set_style_text_color(lbl_music_remaining, COL_DIM, 0);
+    lv_obj_set_pos(lbl_music_elapsed, 32, 446);
+    lv_obj_align(lbl_music_remaining, LV_ALIGN_TOP_RIGHT, -32, 446);
+    lv_label_set_text(lbl_music_elapsed, "0:00");
+    lv_label_set_text(lbl_music_remaining, "-0:00");
+
+    lv_obj_add_flag(music_container, LV_OBJ_FLAG_HIDDEN);
+}
+
+static lv_obj_t* make_accent_rule(lv_obj_t* parent, int x, lv_color_t color) {
+    lv_obj_t* rule = lv_obj_create(parent);
+    lv_obj_set_size(rule, 42, 4);
+    lv_obj_set_pos(rule, x, 82);
+    lv_obj_set_style_bg_color(rule, color, 0);
+    lv_obj_set_style_bg_opa(rule, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(rule, 0, 0);
+    lv_obj_set_style_radius(rule, 2, 0);
+    lv_obj_set_style_pad_all(rule, 0, 0);
+    lv_obj_clear_flag(rule, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(rule, LV_OBJ_FLAG_EVENT_BUBBLE);
+    return rule;
+}
+
+static void init_pluribus_screen(lv_obj_t* scr) {
+    pluribus_screen_supported = L.scr_w >= 400 && L.scr_h >= 450;
+    if (!pluribus_screen_supported) return;
+
+    pluribus_container = lv_obj_create(scr);
+    lv_obj_set_size(pluribus_container, L.scr_w, L.scr_h);
+    lv_obj_set_pos(pluribus_container, 0, 0);
+    lv_obj_set_style_bg_color(pluribus_container, COL_BG, 0);
+    lv_obj_set_style_bg_opa(pluribus_container, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(pluribus_container, 0, 0);
+    lv_obj_set_style_pad_all(pluribus_container, 0, 0);
+    lv_obj_clear_flag(pluribus_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(pluribus_container, global_click_cb, LV_EVENT_CLICKED, NULL);
+
+    init_icon_dsc_rgb565a8(&pluribus_logo_dsc, PLURIBUS_LOGO_W,
+                           PLURIBUS_LOGO_H, pluribus_logo_data);
+    pluribus_mark = lv_image_create(pluribus_container);
+    lv_image_set_src(pluribus_mark, &pluribus_logo_dsc);
+    // Deliberately crop the mark at the top/right edges like Pluribus share cards.
+    lv_obj_set_pos(pluribus_mark, L.scr_w - 174, -52);
+    lv_obj_add_flag(pluribus_mark, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    lv_obj_t* eyebrow = lv_label_create(pluribus_container);
+    lv_label_set_text(eyebrow, "PLURIBUS  \xC2\xB7  RECENT ACTIVITY");
+    lv_obj_set_style_text_font(eyebrow, &font_mono_18, 0);
+    lv_obj_set_style_text_color(eyebrow, lv_color_hex(0x7faee8), 0);
+    lv_obj_set_pos(eyebrow, 28, 38);
+    lv_obj_add_flag(eyebrow, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    make_accent_rule(pluribus_container, 28, lv_color_hex(0xe84f9c));
+    make_accent_rule(pluribus_container, 72, lv_color_hex(0x8d5de2));
+    make_accent_rule(pluribus_container, 116, lv_color_hex(0x41b1e8));
+
+    lbl_pluribus_title = lv_label_create(pluribus_container);
+    lv_obj_set_size(lbl_pluribus_title, L.scr_w - 56, 170);
+    lv_label_set_long_mode(lbl_pluribus_title, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(lbl_pluribus_title, &font_tiempos_56, 0);
+    lv_obj_set_style_text_color(lbl_pluribus_title, lv_color_hex(0xf3eadb), 0);
+    lv_obj_set_style_text_line_space(lbl_pluribus_title, -4, 0);
+    lv_obj_set_pos(lbl_pluribus_title, 28, 116);
+    lv_obj_add_flag(lbl_pluribus_title, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    lbl_pluribus_detail = lv_label_create(pluribus_container);
+    lv_obj_set_size(lbl_pluribus_detail, L.scr_w - 76, 62);
+    lv_label_set_long_mode(lbl_pluribus_detail, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(lbl_pluribus_detail, &font_styrene_20, 0);
+    lv_obj_set_style_text_color(lbl_pluribus_detail, lv_color_hex(0x79c8e8), 0);
+    lv_obj_set_pos(lbl_pluribus_detail, 30, 302);
+    lv_obj_add_flag(lbl_pluribus_detail, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    lbl_pluribus_status = lv_label_create(pluribus_container);
+    lv_obj_set_style_text_font(lbl_pluribus_status, &font_styrene_16, 0);
+    lv_obj_set_style_text_letter_space(lbl_pluribus_status, 2, 0);
+    lv_obj_set_style_bg_opa(lbl_pluribus_status, LV_OPA_30, 0);
+    lv_obj_set_style_radius(lbl_pluribus_status, 14, 0);
+    lv_obj_set_style_pad_left(lbl_pluribus_status, 14, 0);
+    lv_obj_set_style_pad_right(lbl_pluribus_status, 14, 0);
+    lv_obj_set_style_pad_top(lbl_pluribus_status, 7, 0);
+    lv_obj_set_style_pad_bottom(lbl_pluribus_status, 7, 0);
+    lv_obj_set_pos(lbl_pluribus_status, 28, 382);
+    lv_obj_add_flag(lbl_pluribus_status, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    lv_obj_t* footer_rule = lv_obj_create(pluribus_container);
+    lv_obj_set_size(footer_rule, 116, 2);
+    lv_obj_set_pos(footer_rule, 28, 438);
+    lv_obj_set_style_bg_color(footer_rule, lv_color_hex(0x34415c), 0);
+    lv_obj_set_style_bg_opa(footer_rule, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(footer_rule, 0, 0);
+    lv_obj_set_style_pad_all(footer_rule, 0, 0);
+    lv_obj_clear_flag(footer_rule, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(footer_rule, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    lbl_pluribus_footer = lv_label_create(pluribus_container);
+    lv_obj_set_width(lbl_pluribus_footer, L.scr_w - 56);
+    lv_obj_set_style_text_font(lbl_pluribus_footer, &font_mono_18, 0);
+    lv_obj_set_style_text_color(lbl_pluribus_footer, lv_color_hex(0x777d8b), 0);
+    lv_obj_set_style_text_letter_space(lbl_pluribus_footer, 1, 0);
+    lv_obj_set_pos(lbl_pluribus_footer, 28, 448);
+    lv_obj_add_flag(lbl_pluribus_footer, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    lv_obj_add_flag(pluribus_container, LV_OBJ_FLAG_HIDDEN);
 }
 
 // ======== Public API ========
@@ -647,6 +947,8 @@ void ui_init(void) {
 
     init_usage_screen(scr);
     init_codex_screen(scr);
+    init_music_screen(scr);
+    init_pluribus_screen(scr);
     splash_init(scr);
 
     if (splash_get_root()) {
@@ -724,6 +1026,8 @@ void ui_update(const UsageData* data) {
         lv_obj_clear_flag(lbl_spending_desc,   LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_spending_status,   LV_OBJ_FLAG_HIDDEN);
         if (panel_weekly) lv_obj_clear_flag(panel_weekly, LV_OBJ_FLAG_HIDDEN);
+        update_clock_marker(bar_session, -1, 0);
+        update_clock_marker(bar_weekly, -1, 0);
     } else {
         lv_obj_set_style_text_font(lbl_session_pct, L.pct_font, 0);
         lv_label_set_text(lbl_session_label, "Current");
@@ -732,6 +1036,8 @@ void ui_update(const UsageData* data) {
         lv_obj_add_flag(lbl_spending_desc,   LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(lbl_spending_status, LV_OBJ_FLAG_HIDDEN);
         if (panel_weekly) lv_obj_clear_flag(panel_weekly, LV_OBJ_FLAG_HIDDEN);
+        update_clock_marker(bar_session, data->session_reset_mins, 300);
+        update_clock_marker(bar_weekly, data->weekly_reset_mins, 10080);
     }
 
     char buf[48];
@@ -783,6 +1089,8 @@ void ui_update(const UsageData* data) {
     // ---- Codex view ----
     codex_data_seen = data->codex_valid;
     if (!data->codex_valid) {
+        update_clock_marker(bar_codex1, -1, 0);
+        update_clock_marker(bar_codex2, -1, 0);
         // Host stopped sending Codex data while we're on its screen (config
         // flipped off, logs vanished) — retreat to the usage view.
         if (current_screen == SCREEN_CODEX) ui_show_screen(SCREEN_USAGE);
@@ -794,6 +1102,7 @@ void ui_update(const UsageData* data) {
     lv_label_set_text_fmt(lbl_codex1_pct, "%d%%", c1);
     lv_bar_set_value(bar_codex1, c1, LV_ANIM_ON);
     lv_obj_set_style_bg_color(bar_codex1, pct_color(data->codex_pct), LV_PART_INDICATOR);
+    update_clock_marker(bar_codex1, data->codex_reset_mins, data->codex_window_mins);
     format_reset_time(data->codex_reset_mins, buf, sizeof(buf));
     lv_label_set_text(lbl_codex1_reset, buf);
 
@@ -808,11 +1117,13 @@ void ui_update(const UsageData* data) {
         lv_label_set_text_fmt(lbl_codex2_pct, "%d%%", c2);
         lv_bar_set_value(bar_codex2, c2, LV_ANIM_ON);
         lv_obj_set_style_bg_color(bar_codex2, pct_color(data->codex_pct2), LV_PART_INDICATOR);
+        update_clock_marker(bar_codex2, data->codex_reset_mins2, data->codex_window_mins2);
         format_reset_time(data->codex_reset_mins2, buf, sizeof(buf));
         lv_label_set_text(lbl_codex2_reset, buf);
         lv_obj_clear_flag(panel_codex2, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(panel_codex_daily, LV_OBJ_FLAG_HIDDEN);
     } else {
+        update_clock_marker(bar_codex2, -1, 0);
         long today_total = data->codex_tokens_in + data->codex_tokens_out;
         char tbuf[16];
         format_tokens(today_total, tbuf, sizeof(tbuf));
@@ -833,6 +1144,162 @@ void ui_update(const UsageData* data) {
         lv_obj_clear_flag(panel_codex_daily, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(panel_codex2, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+void ui_update_now_playing(const NowPlayingData* data) {
+    if (!music_screen_supported || !data) return;
+    music_last_update_ms = lv_tick_get();
+    music_playing = data->playing;
+    if (!music_playing) {
+        if (current_screen == SCREEN_NOW_PLAYING) ui_show_screen(SCREEN_SPLASH);
+        return;
+    }
+
+    music_duration = data->duration_sec > 0 ? data->duration_sec : 0;
+    music_elapsed_base = data->elapsed_sec > 0 ? data->elapsed_sec : 0;
+    music_progress_base_ms = music_last_update_ms;
+    music_expected_generation = data->artwork_generation;
+    lv_label_set_text(lbl_music_title, data->title);
+    lv_label_set_text(lbl_music_artist, data->artist);
+
+    // A changed track never displays the previous track's cover as if it were
+    // current. Metadata appears immediately; the neutral panel remains until
+    // the checked artwork transfer completes.
+    if (music_art_generation != music_expected_generation) {
+        lv_obj_add_flag(music_art, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(music_art_placeholder, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static uint32_t pluribus_age_now(void) {
+    uint32_t elapsed = (lv_tick_get() - pluribus_received_ms) / 60000U;
+    if (pluribus_received_age > UINT32_MAX - elapsed) return UINT32_MAX;
+    return pluribus_received_age + elapsed;
+}
+
+static void render_pluribus_footer(uint32_t age) {
+    if (!lbl_pluribus_footer || age == pluribus_last_rendered_age) return;
+    pluribus_last_rendered_age = age;
+    char age_text[28];
+    if (age == 0) snprintf(age_text, sizeof(age_text), "JUST NOW");
+    else if (age < 60) snprintf(age_text, sizeof(age_text), "%lu MIN AGO", (unsigned long)age);
+    else if (age < 24 * 60) snprintf(age_text, sizeof(age_text), "%lu HR AGO", (unsigned long)(age / 60));
+    else snprintf(age_text, sizeof(age_text), "%lu DAY AGO", (unsigned long)(age / (24 * 60)));
+
+    char kind[sizeof(pluribus_kind)];
+    size_t i = 0;
+    for (; pluribus_kind[i] && i + 1 < sizeof(kind); ++i) {
+        char c = pluribus_kind[i];
+        kind[i] = (c >= 'a' && c <= 'z') ? (char)(c - ('a' - 'A')) : c;
+    }
+    kind[i] = '\0';
+    lv_label_set_text_fmt(lbl_pluribus_footer, "%s%s%s",
+        kind, kind[0] ? "  \xC2\xB7  " : "", age_text);
+}
+
+void ui_update_pluribus(const PluribusActivityData* data) {
+    if (!pluribus_screen_supported || !data) return;
+    if (!data->present) {
+        pluribus_present = false;
+        pluribus_id = -1;
+        if (current_screen == SCREEN_PLURIBUS) ui_show_screen(SCREEN_SPLASH);
+        return;
+    }
+
+    // ``!=`` is intentional: a rebuilt/reset local database may restart ids.
+    // Every valid receipt also refreshes the monotonic age latch.
+    bool replacement = data->id != pluribus_id;
+    pluribus_id = data->id;
+    pluribus_received_ms = lv_tick_get();
+    pluribus_received_age = data->age_minutes;
+    pluribus_last_rendered_age = UINT32_MAX;
+    pluribus_present = pluribus_received_age < PLURIBUS_EXPIRY_MINUTES;
+    strlcpy(pluribus_kind, data->kind, sizeof(pluribus_kind));
+
+    if (!pluribus_present) {
+        if (current_screen == SCREEN_PLURIBUS) ui_show_screen(SCREEN_SPLASH);
+        return;
+    }
+    (void)replacement;
+    lv_label_set_text(lbl_pluribus_title, data->title);
+    lv_label_set_text(lbl_pluribus_detail, data->detail);
+    if (data->detail[0]) lv_obj_clear_flag(lbl_pluribus_detail, LV_OBJ_FLAG_HIDDEN);
+    else                 lv_obj_add_flag(lbl_pluribus_detail, LV_OBJ_FLAG_HIDDEN);
+
+    lv_color_t status_color;
+    const char* status_text;
+    if (strcmp(data->status, "needs_review") == 0) {
+        status_color = lv_color_hex(0xe2a65d);
+        status_text = "NEEDS REVIEW";
+    } else if (strcmp(data->status, "failed") == 0) {
+        status_color = lv_color_hex(0xe05b62);
+        status_text = "NEEDS ATTENTION";
+    } else {
+        status_color = lv_color_hex(0x57bada);
+        status_text = "COMPLETE";
+    }
+    lv_label_set_text(lbl_pluribus_status, status_text);
+    lv_obj_set_style_text_color(lbl_pluribus_status, status_color, 0);
+    lv_obj_set_style_bg_color(lbl_pluribus_status, status_color, 0);
+    render_pluribus_footer(pluribus_received_age);
+    // A taller replacement headline must not let LVGL's child-size refresh
+    // carry a latent scroll offset into this fixed full-screen composition.
+    lv_obj_scroll_to(pluribus_container, 0, 0, LV_ANIM_OFF);
+}
+
+void ui_update_artwork(const BleArtwork* artwork) {
+    if (!music_screen_supported || !artwork || !artwork->pixels) return;
+    if (artwork->generation != music_expected_generation) return;
+    if (music_art_dsc.data) lv_image_cache_drop(&music_art_dsc);
+    music_art_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    music_art_dsc.header.cf = artwork->encoding == BLE_ART_JPEG
+        ? LV_COLOR_FORMAT_RAW : LV_COLOR_FORMAT_RGB565;
+    music_art_dsc.header.w = artwork->width;
+    music_art_dsc.header.h = artwork->height;
+    music_art_dsc.header.stride = artwork->encoding == BLE_ART_JPEG
+        ? 0 : artwork->width * 2;
+    music_art_dsc.data_size = artwork->size;
+    music_art_dsc.data = artwork->pixels;
+    music_art_generation = artwork->generation;
+    lv_image_set_src(music_art, &music_art_dsc);
+    lv_obj_set_pos(music_art, (L.scr_w - artwork->width) / 2, 50);
+    lv_obj_add_flag(music_art_placeholder, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(music_art, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_invalidate(music_art);
+}
+
+static void update_music_progress(void) {
+    if (!music_screen_supported || !music_playing) return;
+    uint32_t now = lv_tick_get();
+    if (now - music_last_update_ms >= MUSIC_FRESH_MS) {
+        music_playing = false;
+        if (current_screen == SCREEN_NOW_PLAYING) ui_show_screen(SCREEN_SPLASH);
+        return;
+    }
+    int elapsed = music_elapsed_base + (int)((now - music_progress_base_ms) / 1000);
+    if (music_duration > 0 && elapsed > music_duration) elapsed = music_duration;
+    int value = music_duration > 0 ? (int)((int64_t)elapsed * 1000 / music_duration) : 0;
+    lv_bar_set_value(bar_music, value, LV_ANIM_OFF);
+    char buf[16];
+    format_track_time(elapsed, buf, sizeof(buf));
+    lv_label_set_text(lbl_music_elapsed, buf);
+    format_track_time(music_duration - elapsed, buf, sizeof(buf));
+    char remaining[18];
+    snprintf(remaining, sizeof(remaining), "-%s", buf);
+    lv_label_set_text(lbl_music_remaining, remaining);
+}
+
+static void update_pluribus_age(void) {
+    if (!pluribus_screen_supported || !pluribus_present) return;
+    if (lv_obj_get_scroll_y(pluribus_container) != 0)
+        lv_obj_scroll_to_y(pluribus_container, 0, LV_ANIM_OFF);
+    uint32_t age = pluribus_age_now();
+    if (age >= PLURIBUS_EXPIRY_MINUTES) {
+        pluribus_present = false;
+        if (current_screen == SCREEN_PLURIBUS) ui_show_screen(SCREEN_SPLASH);
+        return;
+    }
+    render_pluribus_footer(age);
 }
 
 // Pick the usage-view sub-screen: pairing hint (BLE down), the idle "Zzz" screen
@@ -859,6 +1326,8 @@ static void update_view_state(void) {
 }
 
 void ui_tick_anim(void) {
+    update_music_progress();
+    update_pluribus_age();
     // The Codex view shows live numbers only: once the link drops or data goes
     // stale, retreat to the usage view, whose pair/idle sub-views own those
     // states. While live it runs the same animated status line as the usage
@@ -930,40 +1399,74 @@ void ui_tick_anim(void) {
 static screen_t prev_non_splash_screen = SCREEN_USAGE;
 static void apply_battery_visibility(void) {
     if (!battery_img) return;
-    if (current_screen == SCREEN_SPLASH) lv_obj_add_flag(battery_img, LV_OBJ_FLAG_HIDDEN);
-    else                                  lv_obj_clear_flag(battery_img, LV_OBJ_FLAG_HIDDEN);
+    if (!battery_present || current_screen == SCREEN_SPLASH ||
+        current_screen == SCREEN_NOW_PLAYING || current_screen == SCREEN_PLURIBUS)
+        lv_obj_add_flag(battery_img, LV_OBJ_FLAG_HIDDEN);
+    else
+        lv_obj_clear_flag(battery_img, LV_OBJ_FLAG_HIDDEN);
 }
 
-static void global_click_cb(lv_event_t* e) {
-    (void)e;
-    // Tap cycle: Splash -> Usage -> (Codex when live data carries it) -> Splash.
-    // Without Codex data this stays the original Splash <-> Usage toggle.
+static void advance_screen(void) {
+    // Explicit gated cycle: Splash -> Usage -> Codex -> Music -> Pluribus.
     if (current_screen == SCREEN_SPLASH) {
         ui_show_screen(SCREEN_USAGE);
     } else if (current_screen == SCREEN_USAGE && codex_data_seen && view_state == 2) {
         ui_show_screen(SCREEN_CODEX);
+    } else if ((current_screen == SCREEN_USAGE || current_screen == SCREEN_CODEX) &&
+               music_screen_supported && music_playing) {
+        ui_show_screen(SCREEN_NOW_PLAYING);
+    } else if ((current_screen == SCREEN_USAGE || current_screen == SCREEN_CODEX ||
+                current_screen == SCREEN_NOW_PLAYING) && pluribus_screen_supported &&
+               pluribus_present) {
+        ui_show_screen(SCREEN_PLURIBUS);
     } else {
         ui_show_screen(SCREEN_SPLASH);
     }
 }
 
+static void global_click_cb(lv_event_t* e) {
+    (void)e;
+    advance_screen();
+}
+
+void ui_tick_screen_rotation(void) {
+    uint32_t now = lv_tick_get();
+    if (now - last_screen_change_ms >= SCREEN_ROTATE_MS) advance_screen();
+}
+
 void ui_show_screen(screen_t screen) {
     lv_obj_add_flag(usage_container, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(codex_container, LV_OBJ_FLAG_HIDDEN);
+    if (music_container) lv_obj_add_flag(music_container, LV_OBJ_FLAG_HIDDEN);
+    if (pluribus_container) lv_obj_add_flag(pluribus_container, LV_OBJ_FLAG_HIDDEN);
     splash_hide();
 
     switch (screen) {
     case SCREEN_SPLASH:  splash_show(); break;
     case SCREEN_USAGE:   lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN); break;
     case SCREEN_CODEX:   lv_obj_clear_flag(codex_container, LV_OBJ_FLAG_HIDDEN); break;
+    case SCREEN_NOW_PLAYING:
+        if (music_container && music_playing)
+            lv_obj_clear_flag(music_container, LV_OBJ_FLAG_HIDDEN);
+        else
+            screen = SCREEN_SPLASH, splash_show();
+        break;
+    case SCREEN_PLURIBUS:
+        if (pluribus_container && pluribus_present)
+            lv_obj_clear_flag(pluribus_container, LV_OBJ_FLAG_HIDDEN);
+        else
+            screen = SCREEN_SPLASH, splash_show();
+        break;
     default: break;
     }
 
     // Corner logo: Clawd mascot everywhere except splash (no corner art) and
     // the Codex screen, where the OpenAI mark takes the slot.
-    splash_mascot_set_visible(screen != SCREEN_SPLASH && screen != SCREEN_CODEX);
+    splash_mascot_set_visible(screen != SCREEN_SPLASH && screen != SCREEN_CODEX &&
+                              screen != SCREEN_NOW_PLAYING && screen != SCREEN_PLURIBUS);
     if (logo_img) {
-        if (screen == SCREEN_SPLASH || screen == SCREEN_CODEX)
+        if (screen == SCREEN_SPLASH || screen == SCREEN_CODEX ||
+            screen == SCREEN_NOW_PLAYING || screen == SCREEN_PLURIBUS)
             lv_obj_add_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
         else
             lv_obj_clear_flag(logo_img, LV_OBJ_FLAG_HIDDEN);
@@ -973,6 +1476,7 @@ void ui_show_screen(screen_t screen) {
 
     if (screen != SCREEN_SPLASH) prev_non_splash_screen = screen;
     current_screen = screen;
+    last_screen_change_ms = lv_tick_get();
     apply_battery_visibility();
 }
 
@@ -997,11 +1501,19 @@ void ui_update_ble_status(ble_state_t state, const char* name, const char* mac) 
 
 void ui_update_battery(int percent, bool charging) {
     if (!battery_img) return;
+
+    // AXP2101 reports -1 when this battery-capable board has no battery
+    // physically connected. Hide the indicator instead of presenting that
+    // state as an alarming empty battery; it will reappear if one is added.
+    battery_present = percent >= 0;
+    if (!battery_present) {
+        apply_battery_visibility();
+        return;
+    }
+
     int idx;
     if (charging) {
         idx = 4;
-    } else if (percent < 0) {
-        idx = 0;
     } else if (percent <= 10) {
         idx = 0;
     } else if (percent <= 35) {

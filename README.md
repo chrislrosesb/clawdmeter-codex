@@ -14,12 +14,12 @@ Shift+Tab over BLE HID for Claude Code's voice mode and mode-toggle shortcuts.
 
 ## Screens
 
-The device boots into the splash. Tap the screen anywhere to switch to the Usage view; tap again to flip back to the splash. If the host also runs [Codex CLI](https://github.com/openai/codex), a Codex screen joins the tap cycle (Splash, Usage, Codex) showing its rate-limit windows and today's tokens against your 7-day average, read passively from Codex's local session logs with no OpenAI network calls or auth. Hosts without Codex keep the two-screen behavior; `codex = off` in the daemon config hides it explicitly.
+The device boots into the splash and automatically rotates screens every 30 seconds. Tap the screen anywhere to advance immediately; the 30-second countdown restarts after each change. Small clock-dots on fixed-duration usage bars mark how much of each limit window has elapsed, making actual usage versus even pace visible at a glance. If the host also runs [Codex CLI](https://github.com/openai/codex), a Codex screen joins the cycle showing its rate-limit windows and today's tokens against your 7-day average, read passively from Codex's local session logs with no OpenAI network calls or auth. On macOS, the optional Apple Music screen joins the rotation only while a track is playing; it shows artwork, title, artist, and locally advancing progress. A local Pluribus 2.0 server at port 8077 can add its latest display-safe activity as another optional screen; the daemon reads Pluribus's existing local token and the firmware removes activity after 24 hours. Hosts without live optional data simply skip those screens. `codex = off` and `now_playing = off` in the daemon config hide those sources explicitly.
 
-|              Splash               |              Usage              |             Codex (optional)              |
-| :-------------------------------: | :-----------------------------: | :---------------------------------------: |
-| ![Splash](screenshots/splash.gif) | ![Usage](screenshots/usage.png) |      ![Codex](screenshots/codex.png)      |
-|   Splash; touch-toggle anytime    | Session and weekly utilization  | Codex rate limits and daily token pace    |
+|              Splash               |              Usage              |             Codex (optional)              | Apple Music (macOS, optional) |
+| :-------------------------------: | :-----------------------------: | :---------------------------------------: | :---------------------------: |
+| ![Splash](screenshots/splash.gif) | ![Usage](screenshots/usage.png) |      ![Codex](screenshots/codex.png)      | Artwork, metadata, and progress |
+|   Splash; touch-toggle anytime    | Session and weekly utilization  | Codex rate limits and daily token pace    | Shown only during playback |
 
 While the splash is up, the middle (PWR) button cycles animations. **Hold the power button for 3 seconds, then release, to put the device into pairing mode** — this clears the saved Bluetooth bond and re-advertises. The firmware also auto-rotates animations every 20 s within the current usage-rate group, so a long stretch on the splash isn't just one Clawd on loop.
 
@@ -75,6 +75,13 @@ The daemon reads your Claude OAuth token from the macOS Keychain (service `Claud
 ```
 
 The installer creates a Python venv in `daemon/.venv/`, installs `bleak` and `httpx`, renders a LaunchAgent into `~/Library/LaunchAgents/com.user.claude-usage-daemon.plist`, and loads it. The first run is launched interactively so macOS prompts for Bluetooth permission.
+
+The installer also offers Apple Music Now Playing. It installs Pillow for
+artwork conversion and writes `now_playing = on` to
+`~/.config/claude-usage-monitor/config`. macOS may ask permission for Python to
+control Music.app. Streaming artwork that Music.app does not expose falls back
+to Apple's public iTunes Search service; metadata and all Claude/Codex features
+continue normally if either artwork source fails.
 
 Useful commands:
 
@@ -231,6 +238,24 @@ JSON payload format (written to RX):
 ```
 
 Fields: `s` = session %, `sr` = session reset (minutes), `w` = weekly %, `wr` = weekly reset (minutes), `st` = status, `ok` = success flag.
+
+Now Playing metadata uses a standalone compact JSON payload under `np`. Artwork
+does not enter this 511-byte JSON channel: the Mac converts a 300x300 cover to
+a compact baseline JPEG and sends ordered binary chunks through the same encrypted RX
+characteristic. A start frame declares dimensions, byte count, generation, and
+CRC32; firmware assembles it in an inactive PSRAM buffer and swaps it onto the
+screen only after the complete frame validates. Firmware also accepts the original
+RGB565 frames as a fallback. This retains the existing GATT schema and Bluetooth bond
+while reducing a typical cover transfer from 180 KB to roughly 10–30 KB.
+
+Pluribus activity uses a separate compact `{"pb":...}` payload. The daemon
+polls the authenticated local `http://127.0.0.1:8077/api/activity/latest`
+endpoint every 15 seconds, resolving `PLURIBUS_CONFIG`, `PLURIBUS_LIBRARY`, and
+the existing Pluribus auth token just as the server does. An unavailable or
+malformed server response sends nothing and cannot disturb Claude, Codex, or
+Music. A successful `{"activity":null}` response clears the screen; otherwise
+the latest event ages locally and leaves the carousel after 24 hours. Only the
+display-safe title/detail supplied by Pluribus are sent—never transcript text.
 
 ## Development
 

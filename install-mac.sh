@@ -132,6 +132,23 @@ configure_chime() {
     fi
 }
 
+# Now Playing stays opt-in because an updated daemon can coexist with older
+# firmware, which would not understand the standalone music payload.
+configure_now_playing() {
+    [ -t 0 ] || return 0
+    local ans cur
+    cur=$(current_config_value now_playing)
+    read -r -p "  Add Apple Music Now Playing to the screen rotation? [Y/n] " ans || ans=""
+    if [[ "$ans" =~ ^[Nn]$ ]]; then
+        if [ "$cur" = "on" ]; then upsert_config_key now_playing off; fi
+        echo "  Now Playing off."
+    else
+        upsert_config_key now_playing on
+        echo "  Set: now_playing = on"
+        echo "  macOS may ask permission for Python to control Music.app."
+    fi
+}
+
 echo "=== Clawdmeter macOS install ==="
 echo ""
 
@@ -189,7 +206,7 @@ if [ ! -d "$VENV_DIR" ]; then
     "$PYTHON3" -m venv "$VENV_DIR"
 fi
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip
-"$VENV_DIR/bin/pip" install --quiet "bleak>=0.22" "httpx>=0.27"
+"$VENV_DIR/bin/pip" install --quiet "bleak>=0.22" "httpx>=0.27" "Pillow>=10.0"
 PYTHON_BIN="$VENV_DIR/bin/python"
 echo "  OK ($PYTHON_BIN)"
 echo ""
@@ -213,6 +230,7 @@ echo "[4/6] Configuring the daemon..."
 configure_config_dirs
 configure_clock
 configure_chime
+configure_now_playing
 echo ""
 
 echo "[5/6] Bluetooth permission check..."

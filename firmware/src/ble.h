@@ -21,6 +21,24 @@ void ble_send_ack(void);
 void ble_send_nack(void);
 void ble_request_refresh(void);
 
+enum BleArtworkEncoding : uint8_t {
+    BLE_ART_RGB565 = 0,
+    BLE_ART_JPEG = 1,
+};
+
+// Album artwork arrives as a checked, chunked transfer over the same encrypted
+// RX characteristic as usage JSON. The completed buffer remains valid until a
+// later call returns a newer frame.
+struct BleArtwork {
+    const uint8_t* pixels;
+    uint32_t size;
+    uint16_t width;
+    uint16_t height;
+    uint16_t generation;
+    BleArtworkEncoding encoding;
+};
+bool ble_take_artwork(BleArtwork* out);
+
 void ble_set_battery_level(int pct);
 
 // BLE HID keyboard
