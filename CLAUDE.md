@@ -6,6 +6,188 @@ selected via PlatformIO's `build_src_filter`. Adding a board means dropping in
 a new folder + a new `[env:...]` block — `main.cpp`, `ui.cpp`, and `splash.cpp`
 never see board-specific code. See [`docs/porting/adding-a-board.md`](docs/porting/adding-a-board.md).
 
+## Chris's current deployment — read before changing or troubleshooting
+
+This section is the canonical runbook for the personalized installation. It
+overrides older or generic host guidance elsewhere in this file when the two
+conflict. Known-good baseline: commit `5d6f363` on 2026-09-07.
+
+### What is deployed
+
+- Hardware: Waveshare ESP32-S3-Touch-AMOLED-2.16, build environment
+  `waveshare_amoled_216`.
+- Source and working copy: `/Users/macmini/Clawdmeter-main`; Chris's fork is
+  `https://github.com/chrislrosesb/clawdmeter-codex` on `main`.
+- Current BLE owner/host: this Mac mini. The device intentionally accepts data
+  from one bonded owner machine, not several computers simultaneously.
+- Host process: `daemon/claude_usage_daemon.py` in `daemon/.venv`, managed by
+  `~/Library/LaunchAgents/com.user.claude-usage-daemon.plist`.
+- The display rotates every 30 seconds among the Clawd animation, Claude usage,
+  Codex usage, Apple Music Now Playing while music is playing, and the latest
+  display-safe Pluribus activity while one is present. Touch advances early and
+  restarts the 30-second timer.
+- Claude usage comes from Claude Code credentials; Codex usage is read passively
+  from local Codex session logs; Apple Music metadata/artwork comes from the Mac
+  currently playing the music; Pluribus activity comes from the local Pluribus
+  server. Never include transcript text in the display payload.
+- This unit has an AXP2101 but no physical battery installed. Its `-1` reading
+  must make `ui_update_battery()` hide the icon via `battery_present`; do not
+  turn that sentinel into an alarming empty-battery glyph. Boards with no
+  battery circuitry remain gated separately by `BoardCaps`.
+
+### macOS BLE invariants (do not "simplify" these)
+
+The device is both a BLE HID keyboard and a custom GATT display. macOS owns the
+HID connection and CoreBluetooth lets the Python daemon access GATT over that
+OS-held relationship. Treat it as one paired accessory, not two independent BLE
+clients.
+
+1. Keep the HID service UUID in the primary advertisement, the Espressif PnP ID,
+   complete keyboard report descriptor (including the LED output report), and
+   `CONFIG_BT_NIMBLE_MAX_CONNECTIONS=2`.
+2. Keep `hid_dev->setHidInfo(0, 0x02)`. A fresh pairing may invoke macOS Keyboard
+   Setup Assistant; that is expected and matches the pairing flow that originally
+   worked. Do not switch the country back to 33 merely to suppress the assistant:
+   that produced a connection that appeared for a moment but did not form the
+   durable authenticated bond needed by the daemon.
+3. `ServerCallbacks::onConnect` may explicitly call `startSecurity` only when
+   `NimBLEDevice::getNumBonds() == 0`. On an existing bond, let NimBLE restore
+   security. Restarting security on the OS-held connection raced bond persistence
+   and crashed inside NVS.
+4. On macOS, the daemon must not call `setup_refresh_subscription()`. The REQ
+   notification is only an optional low-latency hint; the daemon sends its first
+   payload immediately and polls normally without it. Subscribing during bond
+   restoration caused the ESP32 to crash/reconnect before any payload arrived.
+   Linux and Windows may retain the subscription.
+5. Never notify `req_char` re-entrantly from its `onSubscribe` callback. The
+   firmware defers that notification to `ble_tick()`.
+6. The owner identity and BLE keys live in NVS. A normal PlatformIO upload keeps
+   them. Do not erase flash/NVS as routine troubleshooting: it destroys the bond,
+   owner lock, and persisted settings and forces a complete re-pair.
+
+### Correct pairing and ownership transfer
+
+- Normal reconnect: power on the already-paired device and let macOS reconnect.
+  Do not clear bonds or repeatedly click Forget for a transient daemon problem.
+- Fresh pairing/reset: stop the daemon first. Hold the middle PWR button for at
+  least three seconds and **release it while the device is still on**. Bond clearing
+  happens on release; holding through a hardware power-off does not perform the
+  gesture. Then forget the old entry in macOS Bluetooth settings and pair once.
+- Keyboard Setup Assistant on a fresh bond is normal. Complete or dismiss its
+  identification flow after the Bluetooth entry is connected; do not interpret it
+  as a second accessory.
+- A duplicated Forget dialog or a device that briefly moves between Nearby and My
+  Devices is macOS caching, not evidence that firmware needs to be erased. Stop the
+  daemon, inspect logs/serial, and change one side of the bond at a time.
+- To move the unit to another Mac, stop the old Mac's daemon, clear the device bond
+  with the hold-and-release gesture, forget it on the old Mac, and only then pair
+  it with the new Mac. The single-owner lock is deliberate.
+
+Useful host commands:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.user.claude-usage-daemon.plist
+launchctl load ~/Library/LaunchAgents/com.user.claude-usage-daemon.plist
+tail -f ~/Library/Logs/claude-usage-daemon.out.log
+tail -f ~/Library/Logs/claude-usage-daemon.err.log
+claude auth status
+```
+
+Expected healthy daemon startup includes `Connected`,
+`macOS: polling without optional refresh subscription`, a compact usage payload,
+optional `np` and `pb` payloads, and no repeated `Device disconnected`. An empty
+Claude view with `API HTTP 401` in the log is an expired/logged-out Claude CLI
+credential, not a BLE failure. Verify `claude auth status` or let Claude Code renew
+its token before touching pairing.
+
+### Safe build, flash, and verification procedure
+
+1. Stop the LaunchAgent before pairing experiments, serial diagnosis, or flashing;
+   otherwise its automatic reconnect loop obscures the first failure.
+2. Confirm the exact port with `ls /dev/cu.* | rg 'usb|modem|serial'`. Chris may
+   unplug the device intentionally; a vanished USB port by itself is not a firmware
+   crash. Ask/check before diagnosing it as one.
+3. Build and test:
+
+   ```bash
+   ./daemon/.venv/bin/python -m pytest daemon/tests -q
+   pio run -d firmware -e waveshare_amoled_216
+   ```
+
+4. Flash with a normal upload, never an erase:
+
+   ```bash
+   pio run -d firmware -e waveshare_amoled_216 -t upload \
+     --upload-port /dev/cu.usbmodemNNNNN
+   ```
+
+5. Restart the LaunchAgent and verify real payloads in its log. For BLE/firmware
+   faults, capture serial output and decode the addresses against the exact ELF in
+   `firmware/.pio/build/waveshare_amoled_216/firmware.elf`; do not guess from the
+   visible Bluetooth state alone.
+6. Observe at least one complete 30-second rotation and one artwork change on real
+   hardware. Check that Claude, Codex, music, and Pluribus each appear when their
+   source is live and that the daemon does not enter a disconnect loop.
+
+### Artwork memory and performance
+
+- The Mac sends 300×300 baseline JPEG artwork in checked binary chunks. Typical
+  covers are roughly 5–30 KB and arrived in about 0.7–3.5 seconds during hardware
+  verification. Do not revert to the original 180 KB RGB565 transfer for routine
+  use.
+- `waveshare_amoled_216` requires `ARDUINO_LOOP_STACK_SIZE=16384`. LVGL's JPEG
+  decoder overflowed Arduino's default 8 KB `loopTask` stack and rebooted while
+  drawing otherwise-valid artwork. A backtrace through `lv_tjpgd.c:decoder_info`
+  plus `Stack canary watchpoint triggered (loopTask)` identifies this failure.
+- Artwork buffers remain in PSRAM and use the checked double-buffer protocol.
+  Preserve generation matching, CRC validation, JPEG SOI/EOI validation, and cache
+  invalidation so an old cover cannot be displayed for a new song.
+
+### Phase 2 — work Mac relay (planned, not implemented yet)
+
+Tomorrow's goal is to pair the physical device to the office Mac while keeping
+Claude, Codex, and Pluribus collection on the Mac mini. Apple Music must always be
+read from the **work Mac**, because that is where playback occurs. BLE itself is
+not relayed over Tailscale; compact display state is relayed and the work Mac is
+the only machine that writes it to the device.
+
+Target architecture:
+
+```text
+Mac mini: Claude + Codex + Pluribus collector
+    -> authenticated/private state feed over the existing Tailscale path
+Work Mac: relay receiver + local Apple Music reader + BLE writer
+    -> single bonded Clawdmeter
+```
+
+Pluribus remains responsible for its normal push notifications and also exposes
+the latest display-safe activity to the collector. The work-Mac receiver merges
+that remote state with local Now Playing immediately before writing the existing
+GATT payloads. Do not make both Macs compete for BLE ownership, and do not send
+music state from the Mac mini.
+
+Implementation/rollout order:
+
+1. Define a small versioned state envelope and stale-data behavior. Reuse the
+   current compact usage/`pb` structures; do not relay secrets or raw transcripts.
+2. Expose the collector only over the tailnet (or the already-authenticated Pluribus
+   server path), with bounded timeouts and last-known-good timestamps.
+3. Build a work-Mac LaunchAgent that receives remote state, reads Music.app locally,
+   and owns the existing BLE session. Test the receiver locally before transferring
+   the physical bond.
+4. At the office, stop the Mac-mini BLE LaunchAgent. Perform the controlled bond
+   transfer described above and complete the one-time keyboard setup on the work
+   Mac.
+5. Verify sources separately: remote Claude, remote Codex, remote Pluribus, local
+   Apple Music metadata, local artwork, then the 30-second rotation and Pluribus
+   notification behavior.
+6. Keep rollback simple: stop the work-Mac receiver, clear/forget the bond in the
+   controlled order, pair back to the Mac mini, and restart its LaunchAgent.
+
+Do not change the on-device payload schema merely because the data crosses two
+Macs. Phase 2 should be a host-side transport/ownership change; the currently
+working firmware and screens are the stable boundary.
+
 Seven ports today (two SoC families, five panel sizes):
 
 - `boards/waveshare_amoled_216/` — original Waveshare ESP32-S3-Touch-AMOLED-2.16 (CO5300, 480×480 square, CST9220 touch, IMU rotation). Build env: `waveshare_amoled_216`.
@@ -94,7 +276,7 @@ firmware/src/
     sim/                    — native desktop simulator: SDL2 + Arduino shims + scenario playback
     template/               — copy this to bootstrap a new port
   main.cpp                  — setup() + loop(): HAL calls only, zero #ifdef BOARD_*
-  ui.{h,cpp}                — 3-screen UI (splash, usage, bluetooth). compute_layout() picks fonts/positions from board_caps() (responsive — current breakpoint: H >= 460 → large, else compact)
+  ui.{h,cpp}                — splash, Claude usage, Codex, Bluetooth, Now Playing, and Pluribus screens; compute_layout() picks fonts/positions from board_caps()
   splash.{h,cpp}            — 20×20 pixel-art engine. CELL = min(W,H)/20, centered.
   ble.{h,cpp}               — NimBLE peripheral: custom data service + HID keyboard
   data.h                    — UsageData struct
