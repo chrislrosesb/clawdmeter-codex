@@ -392,6 +392,15 @@ The boot screen is `SCREEN_SPLASH` and only advances on a physical button press,
 17 official Anthropic Clawd animations (core poses + persona scenes), archived
 with full provenance in `research/clawd-official/`. Pipeline:
 
+On every entry to `SCREEN_SPLASH`, `splash_show()` draws from a hardware-random
+shuffled deck of the complete 17-animation catalog. The deck prevents entry
+repeats until all 17 have appeared and avoids an immediate duplicate across deck
+boundaries. Do not start at an arbitrary frame: the authored intro/loop/outro and
+walking choreography require frame zero. The 20-second within-splash rotation and
+mid-display usage-rate changes still select from the current rate group. This
+source behavior requires a firmware flash and is not part of the currently
+deployed work-Mac device until that flash is verified there.
+
 ```bash
 node tools/convert_official_clawd.js            # → firmware/src/splash_animations.h
 node tools/convert_official_clawd.js --verify DIR   # + per-animation PNGs for eyeballing

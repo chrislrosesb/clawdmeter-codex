@@ -8,6 +8,9 @@
 #include <Arduino.h>
 #include <string.h>
 #include <esp_heap_caps.h>
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp_system.h>
+#endif
 
 // 60×60 stage. CELL sized so the canvas fits the smaller display dimension —
 // the canvas is square and centered, so on portrait or letterboxed panels
@@ -55,6 +58,16 @@ static int8_t  group_lists[GROUP_COUNT][GROUP_MAX];
 static uint8_t group_size[GROUP_COUNT] = {0};
 static uint8_t group_rotation[GROUP_COUNT] = {0};
 
+// Each return to the splash draws from a shuffled deck spanning the complete
+// catalog. This makes short, 30-second screen visits expose every animation
+// before any entry animation repeats. Rate-group picks still drive the
+// mid-screen 20-second rotation and react to usage-rate changes.
+static uint16_t entry_deck[SPLASH_ANIM_COUNT];
+static uint16_t entry_deck_pos = SPLASH_ANIM_COUNT;
+#if !defined(ARDUINO_ARCH_ESP32)
+static uint32_t shuffle_rng_state = 0;
+#endif
+
 static const char* GROUP_NAMES[GROUP_COUNT][GROUP_MAX] = {
     // Group 0 — idle / sleepy (calm, investigative). Magnifier first: it's
     // the boot pick, and lurking-first would boot to a near-empty screen.
@@ -66,6 +79,40 @@ static const char* GROUP_NAMES[GROUP_COUNT][GROUP_MAX] = {
     // Group 3 — heavy burn (high-energy rides + the most exuberant jump)
     { "racing car", "cloud", "sailing scene", "jumping happy" },
 };
+
+static uint32_t splash_random_u32(void) {
+#if defined(ARDUINO_ARCH_ESP32)
+    return esp_random();
+#else
+    // Native simulator fallback. A tiny xorshift generator is sufficient for
+    // presentation order; device builds use the ESP32 hardware RNG above.
+    if (shuffle_rng_state == 0) {
+        shuffle_rng_state = (uint32_t)millis() ^
+                            (uint32_t)(uintptr_t)&shuffle_rng_state ^ 0x9E3779B9u;
+    }
+    shuffle_rng_state ^= shuffle_rng_state << 13;
+    shuffle_rng_state ^= shuffle_rng_state >> 17;
+    shuffle_rng_state ^= shuffle_rng_state << 5;
+    return shuffle_rng_state;
+#endif
+}
+
+static void refill_entry_deck(void) {
+    for (uint16_t i = 0; i < SPLASH_ANIM_COUNT; i++) entry_deck[i] = i;
+    for (int i = SPLASH_ANIM_COUNT - 1; i > 0; i--) {
+        uint16_t j = (uint16_t)(splash_random_u32() % (uint32_t)(i + 1));
+        uint16_t tmp = entry_deck[i];
+        entry_deck[i] = entry_deck[j];
+        entry_deck[j] = tmp;
+    }
+    // At a deck boundary, do not immediately replay whatever was last visible.
+    if (SPLASH_ANIM_COUNT > 1 && entry_deck[0] == cur_anim) {
+        uint16_t tmp = entry_deck[0];
+        entry_deck[0] = entry_deck[1];
+        entry_deck[1] = tmp;
+    }
+    entry_deck_pos = 0;
+}
 
 // Scratch stage: the current animation frame composed centered onto the full
 // 60×60 grid (index 0 = background elsewhere). 3.6 KB of static RAM.
@@ -157,6 +204,23 @@ static void anim_reset(const splash_anim_def_t *a) {
 
 static const uint8_t* compose_stage(const splash_anim_def_t *a, uint16_t frame);
 static void render_frame(const uint8_t *cells, const uint16_t *palette);
+
+static void start_animation(uint16_t index, const char *reason) {
+    cur_anim = index;
+    cur_frame = 0;
+    frame_started_ms = millis();
+    last_pick_ms = frame_started_ms;
+    const splash_anim_def_t *a = &splash_anims[cur_anim];
+    anim_reset(a);
+    render_frame(compose_stage(a, 0), a->palette);
+    Serial.printf("splash %s: -> %s\n", reason, a->name);
+}
+
+static void splash_pick_for_entry(void) {
+    if (SPLASH_ANIM_COUNT == 0) return;
+    if (entry_deck_pos >= SPLASH_ANIM_COUNT) refill_entry_deck();
+    start_animation(entry_deck[entry_deck_pos++], "entry");
+}
 
 // Start walking toward `target` (stage x of the frame origin).
 static void walk_begin(int target) {
@@ -827,14 +891,7 @@ void splash_tick(void) {
 
 void splash_next(void) {
     if (SPLASH_ANIM_COUNT == 0) return;
-    cur_anim = (cur_anim + 1) % SPLASH_ANIM_COUNT;
-    cur_frame = 0;
-    frame_started_ms = millis();
-    last_pick_ms = frame_started_ms;
-    const splash_anim_def_t *a = &splash_anims[cur_anim];
-    anim_reset(a);
-    render_frame(compose_stage(a, 0), a->palette);
-    Serial.printf("splash: -> %s\n", a->name);
+    start_animation((cur_anim + 1) % SPLASH_ANIM_COUNT, "manual");
 }
 
 void splash_pick_for_current_rate(void) {
@@ -848,19 +905,13 @@ void splash_pick_for_current_rate(void) {
     int8_t idx = group_lists[g][slot];
     if (idx < 0) return;
 
-    cur_anim = (uint16_t)idx;
-    cur_frame = 0;
-    frame_started_ms = millis();
-    last_pick_ms = frame_started_ms;
-    const splash_anim_def_t *a = &splash_anims[cur_anim];
-    anim_reset(a);
-    render_frame(compose_stage(a, 0), a->palette);
+    start_animation((uint16_t)idx, "rate");
 }
 
 bool splash_is_active(void) { return active; }
 
 void splash_show(void) {
-    splash_pick_for_current_rate();   // select animation; direct path defers the draw
+    splash_pick_for_entry();          // shuffled full catalog; direct path defers the draw
     if (splash_container) lv_obj_clear_flag(splash_container, LV_OBJ_FLAG_HIDDEN);
     active = true;
 #if SPLASH_DIRECT_DRAW

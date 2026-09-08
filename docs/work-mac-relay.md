@@ -151,6 +151,16 @@ The Mac-mini installer preserves its existing token. The work-Mac installer asks
 for it again and rewrites the private receiver config. No firmware flash is
 needed for host-only updates.
 
+For an actual firmware update, such as the shuffled splash-animation deck, plug
+the Clawdmeter into the work Mac over USB and use a normal upload. This preserves
+its Bluetooth bond and settings; never erase flash/NVS as part of the update:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.user.claude-usage-daemon.plist
+./flash-mac.sh waveshare_amoled_216
+launchctl load -w ~/Library/LaunchAgents/com.user.claude-usage-daemon.plist
+```
+
 ## Rollback to the Mac mini
 
 1. Stop the work-Mac daemon.

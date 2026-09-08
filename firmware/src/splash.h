@@ -12,7 +12,8 @@ void splash_tick(void);
 // Cycle to the next animation in the catalog.
 void splash_next(void);
 
-// Show/hide the splash container.
+// Show/hide the splash container. Each show draws from a shuffled deck of the
+// complete catalog, so all animations appear before an entry repeat.
 void splash_show(void);
 void splash_hide(void);
 
