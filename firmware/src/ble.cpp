@@ -70,6 +70,9 @@ static NimBLECharacteristic* req_char = nullptr;
 
 static ble_state_t state = BLE_STATE_INIT;
 static bool need_advertise = false;
+// NimBLE 2.5 must not notify a characteristic re-entrantly from its own
+// onSubscribe callback. Defer the initial refresh request to ble_tick().
+static volatile bool need_refresh_notify = false;
 
 // One-shot supervision-timeout pushback (see onConnParamsUpdate). Written by
 // NimBLE host-task callbacks, consumed by ble_tick() on the loop task.
@@ -292,6 +295,22 @@ class ServerCallbacks : public NimBLEServerCallbacks {
         Serial.printf("BLE: connected from %s (active=%u)\n",
             info.getAddress().toString().c_str(),
             (unsigned)s->getConnectedCount());
+        // Do not rely on the central to touch an encrypted HID attribute during
+        // a genuinely fresh pairing. macOS can otherwise create a bare radio
+        // link and drop it before completing the bond. Once a bond exists,
+        // however, NimBLE restores its keys itself; explicitly restarting
+        // security on the OS-held macOS HID/GATT connection can race NimBLE's
+        // bond storage and crash in NVS. Only initiate the first-ever bond.
+        if (NimBLEDevice::getNumBonds() == 0) {
+            int security_rc = 0;
+            bool security_started = NimBLEDevice::startSecurity(
+                info.getConnHandle(), &security_rc
+            );
+            Serial.printf("BLE: fresh-pair security start=%s rc=%d\n",
+                security_started ? "OK" : "FAILED", security_rc);
+        } else {
+            Serial.println("BLE: existing bond; security restore left to NimBLE");
+        }
         // Log negotiated link timing — the difference between guessing and
         // knowing when debugging disconnects (e.g. reason=520 supervision
         // timeouts are only explainable next to the negotiated timeout).
@@ -406,7 +425,7 @@ class ReqCallbacks : public NimBLECharacteristicCallbacks {
     void onSubscribe(NimBLECharacteristic* chr, NimBLEConnInfo& info, uint16_t subValue) override {
         Serial.printf("BLE: req_char onSubscribe subValue=%u has_data=%d\n", subValue, has_received_data ? 1 : 0);
         if (subValue != 0 && !has_received_data) {
-            ble_request_refresh();
+            need_refresh_notify = true;
         }
     }
 };
@@ -447,11 +466,14 @@ void ble_init(void) {
     // validates Apple-claimed HIDs against known device IDs and silently
     // refuses to surface a Connect button for spoofers.
     hid_dev->setPnp(0x01, 0x02E5, 0x0001, 0x0100);
-    // country=33 (US ANSI). Setting this to 0 ("not supported") causes macOS
-    // to launch the Keyboard Setup Assistant on first pair asking the user
-    // to identify the layout — we only ever send Space / Shift+Tab so the
-    // physical layout is irrelevant; advertise a known one to skip the wizard.
-    hid_dev->setHidInfo(33, 0x02);
+    // country=0 deliberately lets macOS run Keyboard Setup Assistant on a
+    // fresh bond.  Advertising a preselected ANSI country made the Settings
+    // UI appear to pair, then macOS terminated the unauthenticated HID link
+    // without ever establishing the durable bond the daemon relies on.
+    // The report descriptor remains complete and the PnP ID remains honest;
+    // this only restores the one-time keyboard onboarding that worked on the
+    // original setup.
+    hid_dev->setHidInfo(0, 0x02);
     hid_dev->setBatteryLevel(100);
     input_kbd = hid_dev->getInputReport(1);  // report ID 1
 
@@ -488,6 +510,10 @@ void ble_tick(void) {
     if (need_advertise) {
         need_advertise = false;
         start_advertising();
+    }
+    if (need_refresh_notify) {
+        need_refresh_notify = false;
+        ble_request_refresh();
     }
     // Deferred one-shot supervision-timeout pushback (see onConnParamsUpdate).
     if (param_fix_handle != CONN_HANDLE_NONE &&

@@ -877,7 +877,16 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
 
     log("Connected")
     session = Session(client)
-    await session.setup_refresh_subscription()
+    # CoreBluetooth shares the OS-held HID connection with this GATT client.
+    # Subscribing to the optional refresh characteristic during bond restore can
+    # make NimBLE reopen its bond storage and crash on ESP32. The subscription
+    # is only a latency hint: last_poll=0 below already sends the first payload
+    # immediately and normal polling continues regardless. Keep it everywhere
+    # else, but use polling-only transport on macOS.
+    if sys.platform != "darwin":
+        await session.setup_refresh_subscription()
+    else:
+        log("macOS: polling without optional refresh subscription")
 
     last_poll = 0.0
     next_music_poll = 0.0
