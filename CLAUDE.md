@@ -22,6 +22,12 @@ conflict. Known-good baseline: commit `5d6f363` on 2026-09-07.
   from one bonded owner machine, not several computers simultaneously.
 - Host process: `daemon/claude_usage_daemon.py` in `daemon/.venv`, managed by
   `~/Library/LaunchAgents/com.user.claude-usage-daemon.plist`.
+- Phase 2 collector: `daemon/relay_server.py`, managed independently by
+  `~/Library/LaunchAgents/com.user.clawdmeter-relay.plist`. It is installed and
+  live on the Mac mini's Tailscale IPv4 at port 8765. Its private config/token is
+  `~/.config/claude-usage-monitor/relay-server.json` (mode 600); never copy that
+  token into this repository or logs. The work-Mac receiver and bond transfer are
+  still pending.
 - The display rotates every 30 seconds among the Clawd animation, Claude usage,
   Codex usage, Apple Music Now Playing while music is playing, and the latest
   display-safe Pluribus activity while one is present. Touch advances early and
@@ -143,7 +149,7 @@ its token before touching pairing.
   Preserve generation matching, CRC validation, JPEG SOI/EOI validation, and cache
   invalidation so an old cover cannot be displayed for a new song.
 
-### Phase 2 — work Mac relay (implemented in source; office rollout pending)
+### Phase 2 — Mac-mini relay live; work-Mac rollout pending
 
 Tomorrow's goal is to pair the physical device to the office Mac while keeping
 Claude, Codex, and Pluribus collection on the Mac mini. Apple Music must always be
@@ -151,8 +157,11 @@ read from the **work Mac**, because that is where playback occurs. BLE itself is
 not relayed over Tailscale; compact display state is relayed and the work Mac is
 the only machine that writes it to the device.
 
-The host-side relay and installers are now implemented. They have not yet been
-installed on the office Mac or used to transfer the physical bond. Follow
+The host-side relay and installers are implemented, and the Mac-mini collector
+LaunchAgent is now installed and verified. It returned fresh authenticated
+Claude/Codex and Pluribus payloads while the existing Mac-mini BLE daemon stayed
+running under the same PID. The receiver has not yet been installed on the office
+Mac and the physical bond has not been transferred. Follow
 [`docs/work-mac-relay.md`](docs/work-mac-relay.md) exactly for that rollout.
 
 Implemented architecture:
