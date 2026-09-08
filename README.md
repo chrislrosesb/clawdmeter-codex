@@ -92,6 +92,15 @@ launchctl unload ~/Library/LaunchAgents/com.user.claude-usage-daemon.plist  # st
 launchctl load -w ~/Library/LaunchAgents/com.user.claude-usage-daemon.plist # start
 ```
 
+### Use the display on a second Mac
+
+The optional Phase 2 relay lets one Mac collect Claude, Codex, and Pluribus
+while a work Mac owns Bluetooth and supplies its own Apple Music Now Playing.
+The relay is bound to Tailscale and protected by a private token; it sends only
+compact display payloads, not credentials, sessions, or transcripts. No firmware
+change or reflash is required. See the complete [work-Mac relay setup and safe
+Bluetooth transfer runbook](docs/work-mac-relay.md).
+
 ## Linux installation
 
 ### Flash the firmware

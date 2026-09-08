@@ -13,6 +13,7 @@ LOG_DIR="$HOME/Library/Logs"
 LOG_OUT="$LOG_DIR/claude-usage-daemon.out.log"
 LOG_ERR="$LOG_DIR/claude-usage-daemon.err.log"
 CONFIG_FILE="$HOME/.config/claude-usage-monitor/config"
+RELAY_MODE=""
 
 # Render an absolute path under $HOME back to a ~ form for tidy config entries.
 _tilde() { case "$1" in "$HOME"/*) echo "~${1#"$HOME"}";; *) echo "$1";; esac; }
@@ -154,6 +155,7 @@ echo ""
 
 echo "[1/6] Checking prerequisites..."
 command -v curl >/dev/null || { echo "Error: curl is required"; exit 1; }
+RELAY_MODE=$(current_config_value relay_url)
 
 # The daemon uses Python 3.10+ syntax (PEP 604 `X | None`). macOS ships an
 # older system python3 (3.9), so prefer a newer interpreter — Homebrew's if
@@ -187,7 +189,9 @@ if ! command -v blueutil >/dev/null 2>&1; then
         echo "        stale BLE bonds; otherwise you'll forget the device manually."
     fi
 fi
-if ! security find-generic-password -s "Claude Code-credentials" -a "$USER" -w >/dev/null 2>&1; then
+if [ -n "$RELAY_MODE" ]; then
+    echo "  Relay mode: Claude, Codex, and Pluribus will come from the Mac mini."
+elif ! security find-generic-password -s "Claude Code-credentials" -a "$USER" -w >/dev/null 2>&1; then
     echo "Warning: Claude Code OAuth token not found in Keychain (service 'Claude Code-credentials')."
     echo "  Sign in via Claude Code first, then re-run this installer."
     echo "  Continuing anyway — the daemon will retry on each poll."
@@ -224,20 +228,25 @@ sed \
 echo "  Installed: $PLIST_DST"
 echo ""
 
-# Interactive daemon configuration: which plans to poll, plus the optional
-# clock display and session-reset chime. All re-read by the daemon each poll.
+# Interactive daemon configuration. In relay mode, the Mac mini owns all usage
+# settings and this Mac only needs its local Apple Music preference.
 echo "[4/6] Configuring the daemon..."
-configure_config_dirs
-configure_clock
-configure_chime
+if [ -n "$RELAY_MODE" ]; then
+    echo "  Relay mode detected — keeping usage, clock, and chime settings on the Mac mini."
+else
+    configure_config_dirs
+    configure_clock
+    configure_chime
+fi
 configure_now_playing
 echo ""
 
 echo "[5/6] Bluetooth permission check..."
 echo "  On first run the daemon will trigger a Bluetooth permission prompt."
 echo "  macOS only prompts for foreground processes — so we'll run it"
-echo "  interactively once below. Press Ctrl+C after you see 'Scanning...'"
-echo "  and grant permission when prompted. Then re-run this installer"
+echo "  interactively once below. Grant permission when prompted, then press"
+echo "  Ctrl+C after it reports a connection or 'Device not held by OS'."
+echo "  Re-run this installer if the permission prompt interrupted setup"
 echo "  (or just continue) to enable launchd autostart."
 echo ""
 read -r -p "Run a permission-priming scan now? [Y/n] " ans

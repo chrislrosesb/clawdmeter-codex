@@ -143,7 +143,7 @@ its token before touching pairing.
   Preserve generation matching, CRC validation, JPEG SOI/EOI validation, and cache
   invalidation so an old cover cannot be displayed for a new song.
 
-### Phase 2 — work Mac relay (planned, not implemented yet)
+### Phase 2 — work Mac relay (implemented in source; office rollout pending)
 
 Tomorrow's goal is to pair the physical device to the office Mac while keeping
 Claude, Codex, and Pluribus collection on the Mac mini. Apple Music must always be
@@ -151,7 +151,11 @@ read from the **work Mac**, because that is where playback occurs. BLE itself is
 not relayed over Tailscale; compact display state is relayed and the work Mac is
 the only machine that writes it to the device.
 
-Target architecture:
+The host-side relay and installers are now implemented. They have not yet been
+installed on the office Mac or used to transfer the physical bond. Follow
+[`docs/work-mac-relay.md`](docs/work-mac-relay.md) exactly for that rollout.
+
+Implemented architecture:
 
 ```text
 Mac mini: Claude + Codex + Pluribus collector
@@ -166,23 +170,30 @@ that remote state with local Now Playing immediately before writing the existing
 GATT payloads. Do not make both Macs compete for BLE ownership, and do not send
 music state from the Mac mini.
 
-Implementation/rollout order:
+Implementation details and invariants:
 
-1. Define a small versioned state envelope and stale-data behavior. Reuse the
-   current compact usage/`pb` structures; do not relay secrets or raw transcripts.
-2. Expose the collector only over the tailnet (or the already-authenticated Pluribus
-   server path), with bounded timeouts and last-known-good timestamps.
-3. Build a work-Mac LaunchAgent that receives remote state, reads Music.app locally,
-   and owns the existing BLE session. Test the receiver locally before transferring
-   the physical bond.
-4. At the office, stop the Mac-mini BLE LaunchAgent. Perform the controlled bond
-   transfer described above and complete the one-time keyboard setup on the work
-   Mac.
-5. Verify sources separately: remote Claude, remote Codex, remote Pluribus, local
+1. `daemon/relay_server.py` runs on the Mac mini, polls the existing local source
+   adapters, and publishes a versioned envelope with observation timestamps. It
+   binds to the explicit Tailscale IPv4 chosen by `install-relay-macmini.sh`, not
+   `0.0.0.0`, and requires a random bearer token stored outside Git with mode 600.
+2. The feed carries only the existing sub-512-byte usage and `pb` display payloads.
+   It never carries credentials, raw Codex sessions, transcripts, or Apple Music.
+3. `daemon/relay_source.py` runs inside the normal daemon on the work Mac. It uses
+   bounded requests, rejects invalid/oversized data, rejects envelopes or usage
+   older than three minutes, and adds relay transit time to Pluribus activity age.
+4. `install-work-mac.sh` verifies the authenticated feed before saving its config,
+   enables local Now Playing, then installs the existing BLE LaunchAgent. In relay
+   mode, `install-mac.sh` must not require local Claude credentials or configure
+   Mac-mini-owned usage settings.
+5. A temporary relay failure preserves the last valid device state; it must not
+   manufacture zero usage. Apple Music remains independent and local to the work
+   Mac throughout.
+6. At the office, stop the Mac-mini BLE LaunchAgent but leave the relay LaunchAgent
+   running. Then perform the controlled bond transfer described above and complete
+   the one-time keyboard setup on the work Mac.
+7. Verify sources separately: remote Claude, remote Codex, remote Pluribus, local
    Apple Music metadata, local artwork, then the 30-second rotation and Pluribus
    notification behavior.
-6. Keep rollback simple: stop the work-Mac receiver, clear/forget the bond in the
-   controlled order, pair back to the Mac mini, and restart its LaunchAgent.
 
 Do not change the on-device payload schema merely because the data crosses two
 Macs. Phase 2 should be a host-side transport/ownership change; the currently

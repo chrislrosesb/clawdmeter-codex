@@ -6,6 +6,13 @@
 #
 # The daemon re-reads it on every poll, so edits take effect within ~60s — no restart needed.
 
+# Phase 2 work-Mac receiver only: read Claude, Codex, and Pluribus display state
+# from the Mac mini over its authenticated Tailscale-only relay. Apple Music is
+# still read locally from the work Mac. Leave both unset for normal/local mode.
+# The installer writes these values with mode 600; never commit a real token.
+# relay_url = http://100.x.y.z:8765/v1/state
+# relay_token = paste-the-token-generated-on-the-mac-mini
+
 # Poll more than one Claude config dir and show whichever plan is currently
 # active. Use this if you run separate plans from different config dirs (e.g. a
 # personal plan in ~/.claude and a work plan in ~/.claude-work, selected via

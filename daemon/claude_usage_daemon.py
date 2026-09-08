@@ -29,9 +29,11 @@ from bleak.exc import BleakError
 try:
     from daemon import codex_source  # package context (tests)
     from daemon import pluribus_activity as pluribus_source
+    from daemon import relay_source
 except ImportError:
     import codex_source  # script context (launchd/systemd run the file directly)
     import pluribus_activity as pluribus_source
+    import relay_source
 
 if sys.platform == "darwin":
     try:
@@ -676,6 +678,35 @@ async def poll_active_payload(selector: PlanSelector = _SELECTOR) -> dict | None
     return payload
 
 
+async def poll_display_usage() -> tuple[dict | None, bool]:
+    """Return usage for this BLE host, local or relayed from the Mac mini.
+
+    The relay payload already contains the Mac mini's Codex data.  Never merge
+    the work Mac's local Codex logs into it: Phase 2 deliberately keeps Claude
+    and Codex ownership on the Mac mini while Apple Music remains local.
+    """
+    if relay_source.is_configured():
+        state = await asyncio.to_thread(relay_source.fetch_state)
+        if not state.available:
+            log("Relay unavailable; retaining last usage on device")
+            return None, False
+        return state.usage, False
+    payload, dead = await poll_active()
+    if payload is not None:
+        add_codex_field(payload)
+    return payload, dead
+
+
+def fetch_display_pluribus() -> pluribus_source.PollResult:
+    """Return local Pluribus activity or the Mac mini's relayed activity."""
+    if relay_source.is_configured():
+        state = relay_source.fetch_state()
+        if not state.available or state.pluribus is None:
+            return pluribus_source.PollResult(False)
+        return pluribus_source.PollResult(True, state.pluribus)
+    return pluribus_source.fetch_latest()
+
+
 class Session:
     def __init__(self, client: BleakClient) -> None:
         self.client = client
@@ -908,9 +939,8 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
                 # OAuth endpoint's rate limit (429). When no dir has a usable token
                 # we signal "No data" so the device idles instead of holding stale
                 # numbers until the CLI re-seeds it.
-                payload, dead = await poll_active()
+                payload, dead = await poll_display_usage()
                 if payload is not None:
-                    add_codex_field(payload)   # adds "x" iff local Codex data exists
                     if await session.write_payload(payload):
                         last_poll = time.time()
                         used_successfully = True
@@ -927,7 +957,11 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
                 else:
                     # Transient poll failure (a live token that didn't answer this
                     # cycle) -> stay silent and retry next tick.
-                    log("No usable config dir this cycle")
+                    log("No usable usage source this cycle")
+                    if relay_source.is_configured():
+                        # Avoid hammering the tailnet endpoint once per loop while
+                        # still recovering substantially faster than a full poll.
+                        last_poll = time.time() - (POLL_INTERVAL - 15)
 
             # Apple Music is intentionally independent of Claude polling. A
             # source/permission/artwork failure can only suppress this optional
@@ -982,7 +1016,7 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
             if now >= next_pluribus_poll:
                 next_pluribus_poll = now + PLURIBUS_POLL_INTERVAL
                 try:
-                    result = await asyncio.to_thread(pluribus_source.fetch_latest)
+                    result = await asyncio.to_thread(fetch_display_pluribus)
                 except Exception as e:
                     # Never include resolved config or the bearer token here.
                     log(f"Pluribus activity source failed: {type(e).__name__}")
@@ -1022,6 +1056,8 @@ async def main() -> None:
 
     log("=== Claude Usage Tracker Daemon (BLE, macOS) ===")
     log(f"Poll interval: {POLL_INTERVAL}s")
+    if relay_source.is_configured():
+        log("Phase 2 relay mode: Claude, Codex, and Pluribus come from Mac mini")
     if sys.platform == "darwin" and read_now_playing_setting() == "on" and now_playing_source is None:
         log("Now Playing unavailable: install Pillow and rerun install-mac.sh")
 
