@@ -1,5 +1,9 @@
 # Work-Mac relay setup
 
+Current status (2026-09-08): deployed and verified. The work Mac owns Bluetooth
+and Apple Music; the Mac mini serves Claude, Codex, and Pluribus over Tailscale.
+Keep the Mac-mini Bluetooth writer unloaded while this arrangement is active.
+
 This is the Phase 2 setup for using the physical Clawdmeter at the office while
 keeping its data sources split across two Macs:
 
@@ -151,9 +155,18 @@ The Mac-mini installer preserves its existing token. The work-Mac installer asks
 for it again and rewrites the private receiver config. No firmware flash is
 needed for host-only updates.
 
-For an actual firmware update, such as the shuffled splash-animation deck, plug
-the Clawdmeter into the work Mac over USB and use a normal upload. This preserves
-its Bluetooth bond and settings; never erase flash/NVS as part of the update:
+For an actual firmware update, use a normal upload. This preserves the Bluetooth
+bond and settings; never erase flash/NVS as part of the update.
+
+The preferred build host for Chris's deployment is the Mac mini: bring only the
+Clawdmeter home, leave its Bluetooth bond untouched, and flash it from the
+known-good checkout/toolchain. The managed office network intercepts HTTPS and
+has prevented PlatformIO from downloading pioarduino and ESP32 packages through
+both `uv` and Python `requests`. Do not disable TLS verification to work around
+that. A normal Mac-mini upload preserves the work-Mac owner stored in NVS.
+
+If the work Mac already has every build dependency cached, it may still flash
+normally with:
 
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.user.claude-usage-daemon.plist

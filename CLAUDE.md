@@ -10,7 +10,7 @@ never see board-specific code. See [`docs/porting/adding-a-board.md`](docs/porti
 
 This section is the canonical runbook for the personalized installation. It
 overrides older or generic host guidance elsewhere in this file when the two
-conflict. Known-good baseline: commit `5d6f363` on 2026-09-07.
+conflict. Known-good baseline: commit `e047ee4` on 2026-09-08.
 
 ### What is deployed
 
@@ -18,16 +18,18 @@ conflict. Known-good baseline: commit `5d6f363` on 2026-09-07.
   `waveshare_amoled_216`.
 - Source and working copy: `/Users/macmini/Clawdmeter-main`; Chris's fork is
   `https://github.com/chrislrosesb/clawdmeter-codex` on `main`.
-- Current BLE owner/host: this Mac mini. The device intentionally accepts data
-  from one bonded owner machine, not several computers simultaneously.
-- Host process: `daemon/claude_usage_daemon.py` in `daemon/.venv`, managed by
-  `~/Library/LaunchAgents/com.user.claude-usage-daemon.plist`.
+- Current BLE owner/host: the work Mac. The device intentionally accepts data
+  from one bonded owner machine, not several computers simultaneously. The work
+  Mac supplies Apple Music locally and writes all screens over BLE.
+- Work-Mac host process: `daemon/claude_usage_daemon.py` in `daemon/.venv`,
+  managed by `~/Library/LaunchAgents/com.user.claude-usage-daemon.plist`.
 - Phase 2 collector: `daemon/relay_server.py`, managed independently by
   `~/Library/LaunchAgents/com.user.clawdmeter-relay.plist`. It is installed and
   live on the Mac mini's Tailscale IPv4 at port 8765. Its private config/token is
   `~/.config/claude-usage-monitor/relay-server.json` (mode 600); never copy that
   token into this repository or logs. The work-Mac receiver and bond transfer are
-  still pending.
+  complete and verified. Keep the Mac-mini BLE LaunchAgent unloaded while this
+  arrangement is active; only the relay LaunchAgent belongs on the Mac mini.
 - The display rotates every 30 seconds among the Clawd animation, Claude usage,
   Codex usage, Apple Music Now Playing while music is playing, and the latest
   display-safe Pluribus activity while one is present. Touch advances early and
@@ -106,6 +108,15 @@ Claude view with `API HTTP 401` in the log is an expired/logged-out Claude CLI
 credential, not a BLE failure. Verify `claude auth status` or let Claude Code renew
 its token before touching pairing.
 
+On the Mac mini, `claude auth status` can still report `loggedIn: true` while the
+cached access token is rejected by the Anthropic API. The relay log is
+authoritative: repeated `API HTTP 401` followed by `published no-data state`
+means Claude Code must refresh its token by completing one real request (or an
+interactive login if requested). Restart the relay or wait for its next
+60-second poll, then require `Updated Claude/Codex state`. The compact payload
+currently reports both usage screens as unavailable when Claude is
+unauthenticated, even if local Codex logs still exist.
+
 ### Safe build, flash, and verification procedure
 
 1. Stop the LaunchAgent before pairing experiments, serial diagnosis, or flashing;
@@ -127,8 +138,19 @@ its token before touching pairing.
      --upload-port /dev/cu.usbmodemNNNNN
    ```
 
-5. Restart the LaunchAgent and verify real payloads in its log. For BLE/firmware
-   faults, capture serial output and decode the addresses against the exact ELF in
+   For the office deployment, it is safe to bring only the Clawdmeter back to
+   this Mac mini and flash it over USB. A normal upload does not erase the NVS
+   owner/bond, so it reconnects to the work Mac afterward without pairing again.
+   Keep the Mac-mini BLE writer stopped throughout. The managed office network
+   intercepts HTTPS and has blocked PlatformIO dependency downloads in both
+   `uv` and Python `requests`; prefer this Mac mini's known-good cached toolchain
+   rather than disabling TLS verification.
+
+5. Restart the BLE LaunchAgent only on the machine that owns the device. In the
+   current Phase 2 deployment, leave the Mac-mini BLE writer unloaded; the work
+   Mac resumes its writer when the device returns there. Verify real payloads in
+   the owning host's log. For BLE/firmware faults, capture serial output and
+   decode the addresses against the exact ELF in
    `firmware/.pio/build/waveshare_amoled_216/firmware.elf`; do not guess from the
    visible Bluetooth state alone.
 6. Observe at least one complete 30-second rotation and one artwork change on real
@@ -149,20 +171,19 @@ its token before touching pairing.
   Preserve generation matching, CRC validation, JPEG SOI/EOI validation, and cache
   invalidation so an old cover cannot be displayed for a new song.
 
-### Phase 2 — Mac-mini relay live; work-Mac rollout pending
+### Phase 2 — live and verified
 
-Tomorrow's goal is to pair the physical device to the office Mac while keeping
-Claude, Codex, and Pluribus collection on the Mac mini. Apple Music must always be
-read from the **work Mac**, because that is where playback occurs. BLE itself is
-not relayed over Tailscale; compact display state is relayed and the work Mac is
-the only machine that writes it to the device.
+The physical device is paired to the office Mac while Claude, Codex, and
+Pluribus collection remains on the Mac mini. Apple Music is always read from the
+**work Mac**, because that is where playback occurs. BLE itself is not relayed
+over Tailscale; compact display state is relayed and the work Mac is the only
+machine that writes it to the device.
 
-The host-side relay and installers are implemented, and the Mac-mini collector
-LaunchAgent is now installed and verified. It returned fresh authenticated
-Claude/Codex and Pluribus payloads while the existing Mac-mini BLE daemon stayed
-running under the same PID. The receiver has not yet been installed on the office
-Mac and the physical bond has not been transferred. Follow
-[`docs/work-mac-relay.md`](docs/work-mac-relay.md) exactly for that rollout.
+The host-side relay, installers, work-Mac receiver, local Apple Music/artwork,
+and physical bond transfer are installed and verified. The Mac-mini collector
+returns authenticated Claude/Codex and Pluribus payloads; its old BLE writer
+must remain unloaded. Follow [`docs/work-mac-relay.md`](docs/work-mac-relay.md)
+for operation, updates, and recovery.
 
 Implemented architecture:
 
@@ -398,8 +419,9 @@ repeats until all 17 have appeared and avoids an immediate duplicate across deck
 boundaries. Do not start at an arbitrary frame: the authored intro/loop/outro and
 walking choreography require frame zero. The 20-second within-splash rotation and
 mid-display usage-rate changes still select from the current rate group. This
-source behavior requires a firmware flash and is not part of the currently
-deployed work-Mac device until that flash is verified there.
+behavior was flashed and boot-verified on the physical 2.16-inch device on
+2026-09-08: the work-Mac owner remained present in NVS and the first observed
+post-flash selection was `trumpet` rather than the former fixed walk start.
 
 ```bash
 node tools/convert_official_clawd.js            # → firmware/src/splash_animations.h
