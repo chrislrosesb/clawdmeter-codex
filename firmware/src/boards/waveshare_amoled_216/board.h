@@ -37,8 +37,8 @@
 #define BTN_FWD_GPIO         18    // secondary, Shift+Tab (mode toggle)
 
 // ---- Audio (ES8311 mono codec + onboard speaker, I2S) ----
-// Used to chime on session-usage reset. Pins + codec verified against
-// Waveshare's factory 07_ES8311 example for this exact board. The ES8311 shares
+// Chime output is disabled; retain the pin map for planned microphone capture.
+// Pins verified against Waveshare's examples for this board. The ES8311 shares
 // the I2C bus above (addr 0x18); the external power amp is gated by SND_PA_PIN
 // (drive HIGH to enable). MCLK/WS/PA sit on strapping-capable pins (42/45/46)
 // but are only driven after boot, exactly as Waveshare's own firmware does.
@@ -46,9 +46,8 @@
 #define SND_I2S_BCLK         9
 #define SND_I2S_WS           45     // LRCK
 #define SND_I2S_DOUT         8      // ESP → ES8311 (speaker)
-#define SND_I2S_DIN          10     // ES8311 → ESP (mic; unused, set for STD mode)
+#define SND_I2S_DIN          10     // ES7210 → ESP (microphone ADC)
 #define SND_PA_PIN           46     // power-amp enable, HIGH = on
-#define SND_SAMPLE_RATE      44100
 #define SND_ES8311_ADDR      0x18
 
 // ---- Capability flags (compile-time; redundant with BoardCaps but lets
@@ -58,4 +57,4 @@
 #define BOARD_HAS_IMU              1
 #define BOARD_HAS_BATTERY          1
 #define BOARD_HAS_IO_EXPANDER      0
-#define BOARD_HAS_SOUND            1
+#define BOARD_HAS_SOUND            0

@@ -157,6 +157,23 @@ unauthenticated, even if local Codex logs still exist.
    hardware. Check that Claude, Codex, music, and Pluribus each appear when their
    source is live and that the daemon does not enter a disconnect loop.
 
+### Planned first audio test
+
+See [the first audio test plan](docs/audio-first-test.md) (2026-09-09).
+Scope: explicitly triggered ten-second microphone capture to PSRAM, then USB
+transfer to a WAV on the Mac mini. No SD card, Wi-Fi, continuous recording, or
+Pluribus ingestion. Chris deferred a mute control for this bounded test.
+Chris removed notification chimes from the 2.16-inch build: speaker amp stays off,
+sound HAL calls are no-ops, and the build excludes `chime.cpp` / `es8311.c`.
+I2S is left free for microphone capture; no chime handoff or restoration is needed.
+Other board ports retain their existing sound support. This source change needs
+a normal flash before it affects the device; capture remains unimplemented.
+
+For the full audio project, speech detection and recording decisions belong on
+the Clawdmeter. Transcription may run on either the Mac mini or the office Mac,
+then feed Pluribus. Moving speech detection to a Mac was a review suggestion that
+Chris rejected; do not use it as the default architecture.
+
 ### Artwork memory and performance
 
 - The Mac sends 300×300 baseline JPEG artwork in checked binary chunks. Typical
