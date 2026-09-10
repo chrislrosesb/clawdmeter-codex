@@ -185,7 +185,7 @@ recording is present. Keep the Mac-mini BLE writer stopped during these USB test
 Important hardware lesson: the schematic connects physical microphones to
 ES7210 MIC1/2 and SDOUT1 → GPIO10. MIC3 is the speaker-reference/AEC circuit;
 do not mistake the vendor example's MIC3/4 high-gain settings for the room mics.
-Test defaults: microphone 1 (or `--mic 2`), 37.5 dB gain, 16 kHz / 16-bit mono,
+Test defaults: microphone 1 (or `--mic 2`), 30 dB gain, 16 kHz / 16-bit mono,
 MCLK GPIO42 at 256fs, BCLK9 / WS45. Modern IDF I2S RX reads stereo and explicitly
 extracts the chosen slot. The shared Wire bus keeps its transaction locking;
 no second I2C driver, display-pin change, or SD initialization is permitted here.
@@ -205,12 +205,31 @@ sample amplitude for the same input). The higher-gain firmware was flashed and
 a new three-foot take verified: peak 1,541, RMS 172.34, zero clipped samples or
 reported overruns, 9,999 ms capture, and 1.67-second USB transfer. Independent
 spoken takes are not a calibrated gain measurement. The higher-gain listening
-verdict is pending; this is device-side analog gain, not Mac normalization or AGC. Repeated
+verdict was quiet speech with substantial hiss. Chris then identified that his
+case was blocking the microphone. Gain is restored to the original 30 dB for a
+case-off, same-distance retest. The 30 dB build was normally flashed and its USB
+readiness check passed. The case-off three-foot take at 30 dB completed:
+peak 1,022, RMS 74.85, no clipping or reported overruns, 10,000 ms capture,
+1.67-second verified USB transfer. Chris confirmed playback was "much better"
+with the case off. Keep 30 dB as the current baseline; no noise processing was
+added. Separate spoken takes do not establish a controlled SNR comparison.
+Check microphone openings and case obstruction before increasing gain or adding
+noise processing. This is device-side analog gain, not Mac normalization or AGC. Repeated
 captures returned to the same memory baseline; cancellation and busy rejection
-passed. Six-foot speech performance is still unverified, as is
-live BLE/artwork coexistence with the work Mac. Results and protocol are in
+passed. A case-off six-foot take at 30 dB also transferred successfully
+(`speech-6ft-case-off-gain30.wav`): peak 766, RMS 65.25, no clipping or reported
+overruns, 9,999 ms capture, 1.67-second USB transfer, and 178 display-loop
+iterations (maximum gap 105 ms). Chris confirmed the six-foot playback
+"sounded great." Three-foot and six-foot listening checks have passed with the
+case off at 30 dB; retain this baseline without added noise processing.
+Live BLE/artwork coexistence with the work Mac remains unverified. Results and protocol are in
 `docs/audio-first-test.md`. Preserve the optional build when updating this test
 device; flashing the normal environment intentionally removes recording support.
+
+Work-Mac continuation: use the handoff section in `docs/audio-first-test.md`.
+The device is already flashed at 30 dB; pull source and run the USB receiver,
+without re-pairing, reflashing, or reinstalling the relay. The next bounded task
+is capture alongside live work-Mac BLE/artwork updates, not adding audio features.
 
 For the full audio project, speech detection and recording decisions belong on
 the Clawdmeter. Transcription may run on either the Mac mini or the office Mac,

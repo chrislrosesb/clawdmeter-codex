@@ -2,8 +2,13 @@
 
 Date: 2026-09-09. Status: implemented; USB capture and a prompted three-foot
 speech take verified. Chris confirmed intelligibility but found playback quiet.
-Higher-gain retest also passes structural/clipping checks; its listening verdict,
-six-foot test, and live work-Mac BLE coexistence remain pending.
+Higher-gain retest passes structural/clipping checks but Chris reported hiss and
+quiet speech, then identified a case blocking the microphone. Gain is restored to
+30 dB for a case-off retest, which transferred successfully and Chris confirmed
+sounded "much better." Keep this as the current baseline without added noise
+processing. The six-foot recording also transferred successfully and Chris
+confirmed it "sounded great." Both distance listening checks have passed;
+live work-Mac BLE coexistence remains pending.
 
 ## Run it
 
@@ -23,7 +28,8 @@ stops before USB transfer begins. The command prints the saved WAV path and
 diagnostics. Listen by opening that file in Finder/QuickTime. Run again with a
 different filename for the six-foot test. Existing files are never overwritten.
 `--mic 2` selects the other physical microphone; the default is microphone 1.
-Both currently use 37.5 dB ADC gain. `--port /dev/cu.usbmodemNNNNN` selects a USB
+Both currently use 30 dB ADC gain. Remove any case obstructing microphone openings
+before testing. `--port /dev/cu.usbmodemNNNNN` selects a USB
 device explicitly; auto-detection works only when there is exactly one candidate.
 `--info` never records; Control-C cancels an in-progress test. Close serial
 monitors before running. The wrapper uses an existing Python/pyserial environment.
@@ -38,6 +44,51 @@ pio run -d firmware -e waveshare_amoled_216_audio_test -t upload --upload-port /
 
 Keep the Mac-mini BLE writer stopped and its relay running. Returning to the
 normal build removes audio capture without removing any existing display feature.
+
+## Resume on the work Mac — handoff (2026-09-09)
+
+The physical device already has the tested optional audio firmware installed at
+30 dB. **Do not reflash, reinstall the relay, or clear/re-pair Bluetooth just to
+resume.** The work-Mac bond was preserved throughout USB testing at home.
+Read `CLAUDE.md` completely before making changes. Pull this personal repository:
+
+```bash
+cd ~/Clawdmeter
+git pull --ff-only origin main
+./audio-test-mac.sh --info
+```
+
+The receiver needs Python with pyserial, not PlatformIO or a firmware build.
+The wrapper normally finds the existing `daemon/.venv`. If pyserial is missing,
+inspect that environment and install only the missing receiver dependency there;
+do not alter the working BLE/relay configuration. Use a USB data cable and let
+the utility discover the port; do not reuse the Mac mini's port name blindly.
+
+Next test: verify microphone capture alongside live BLE updates. Keep the
+**work-Mac** BLE writer running for this deliberate coexistence test (the
+Mac-mini writer stays unloaded and its collector stays running). Confirm normal
+Claude/Codex, Pluribus and local Apple Music first. With the case off, coordinate
+one ten-second recording with Chris, using a new output filename:
+
+```bash
+./audio-test-mac.sh --output "$HOME/Downloads/Clawdmeter-audio-tests/work-mac-coexistence-01.wav"
+```
+
+During that capture, check the display remains responsive and change tracks to
+exercise artwork delivery. Then observe a full screen rotation, inspect the
+daemon for disconnects, and check capture diagnostics and playback. Repeat only
+with Chris ready. Investigate source/auth problems separately from Bluetooth;
+do not reset the bond for a usage "no data" screen. Stop the writer only if
+flashing or isolating a fault, per the canonical runbook.
+
+Already verified at home: raw speech sounds good at three and six feet, 30 dB,
+case off; USB checksum, no clipping/overruns, repeat memory baseline, busy/cancel
+handling, and display-loop activity. Still unproven: live work-Mac BLE/artwork
+during capture, physical cable-removal recovery, and long-duration operation.
+No SD, VAD, noise suppression, continuous recording, or transcription is built.
+Speech detection/recording decisions must eventually run on the device;
+transcription may run on either Mac. Do not add these during the coexistence check.
+Recordings remain private/local on the Mac mini and are not included in Git.
 
 ## Outcome and scope
 
@@ -205,7 +256,22 @@ limitations. Nothing starts recording at boot or merely because USB is connected
   1.67-second USB transfer. The display loop ran 202 times (maximum gap 123 ms),
   with the same memory baseline and no reported overruns. This is a separate
   spoken take, not a calibrated source-level comparison. Playback was initiated
-  for Chris; final volume preference is pending.
+  for Chris; he reported quiet speech and substantial hiss. He subsequently
+  identified a case blocking the microphone. Restored 30 dB gain and matching
+  gain-register checks (0x1A) for a case-off, three-foot retest. Build, normal USB
+  upload, non-recording readiness check, and 22 receiver tests passed.
+  Check physical microphone obstruction before changing gain or adding DSP.
+- Case-off three-foot retest at 30 dB (`speech-3ft-case-off-gain30.wav`):
+  peak 1,022, RMS 74.85, no clipped samples or reported overruns, valid checksum,
+  10,000 ms capture and 1.67-second USB transfer. Display loop ran 371 times,
+  maximum gap 104 ms; pre-capture memory matched the previous baseline.
+  Chris confirmed playback sounded "much better" with the case removed. This is a
+  separate spoken take, not a controlled signal-to-noise comparison.
+- Case-off six-foot retest at 30 dB (`speech-6ft-case-off-gain30.wav`):
+  peak 766, RMS 65.25, no clipping or reported overruns, valid checksum,
+  9,999 ms capture and 1.67-second USB transfer. Display loop ran 178 times,
+  maximum gap 105 ms; pre-capture memory matched the previous baseline.
+  Chris confirmed six-foot playback "sounded great," passing the listening check.
 - No reported I2S overruns or read errors. The normal display loop executed
   324 and 821 iterations during those captures; maximum observed loop gap 104 ms.
   The post-fix speech take had 179 loop iterations and a maximum gap of 123 ms.

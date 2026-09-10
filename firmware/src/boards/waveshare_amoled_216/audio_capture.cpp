@@ -60,11 +60,11 @@ bool audio_capture_hal_begin(unsigned microphone) {
         es7210_adc_config_i2s(codec.codec_mode, &codec.i2s_iface) != ESP_OK ||
         es7210_mic_select((es7210_input_mics_t)(ES7210_INPUT_MIC1 | ES7210_INPUT_MIC2)) != ESP_OK ||
         es7210_adc_set_gain((es7210_input_mics_t)(ES7210_INPUT_MIC1 | ES7210_INPUT_MIC2),
-                           GAIN_37_5DB) != ESP_OK ||
+                           GAIN_30DB) != ESP_OK ||
         es7210_adc_ctrl_state(codec.codec_mode, AUDIO_HAL_CTRL_START) != ESP_OK ||
         es7210_read_reg(ES7210_ANALOG_REG40) != 0x43 ||
-        es7210_read_reg(ES7210_MIC1_GAIN_REG43) != 0x1e ||
-        es7210_read_reg(ES7210_MIC2_GAIN_REG44) != 0x1e ||
+        es7210_read_reg(ES7210_MIC1_GAIN_REG43) != 0x1a ||
+        es7210_read_reg(ES7210_MIC2_GAIN_REG44) != 0x1a ||
         es7210_read_reg(ES7210_SDP_INTERFACE1_REG11) != 0x60 ||
         es7210_read_reg(ES7210_SDP_INTERFACE2_REG12) != 0x00) {
         audio_capture_hal_end();
