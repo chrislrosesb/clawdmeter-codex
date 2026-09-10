@@ -101,6 +101,13 @@ compact display payloads, not credentials, sessions, or transcripts. No firmware
 change or reflash is required. See the complete [work-Mac relay setup and safe
 Bluetooth transfer runbook](docs/work-mac-relay.md).
 
+### Optional ten-second microphone test (Waveshare 2.16)
+
+An experimental firmware environment keeps all existing display features and
+adds explicitly triggered microphone recordings over USB. No SD card is needed,
+and nothing records automatically or uploads anywhere. See the
+[audio test instructions and hardware results](docs/audio-first-test.md).
+
 ## Linux installation
 
 ### Flash the firmware

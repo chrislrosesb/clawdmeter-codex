@@ -12,6 +12,7 @@
 #include "idle.h"
 #include "idle_cfg.h"
 #include "brightness.h"
+#include "audio_test.h"
 
 #include "hal/board_caps.h"
 #include "hal/display_hal.h"
@@ -200,6 +201,7 @@ static bool parse_pluribus_json(const char* json, PluribusActivityData* out,
 #define CMD_BUF_SIZE 64
 static char cmd_buf[CMD_BUF_SIZE];
 static int cmd_pos = 0;
+static bool cmd_overflow = false;
 
 static void send_screenshot() {
 #ifndef BOARD_HAS_PSRAM
@@ -243,12 +245,20 @@ static void check_serial_cmd() {
     while (Serial.available()) {
         char c = Serial.read();
         if (c == '\n' || c == '\r') {
+            if (cmd_overflow) {
+                cmd_pos = 0;
+                cmd_overflow = false;
+                continue;
+            }
             cmd_buf[cmd_pos] = '\0';
-            if (strcmp(cmd_buf, "screenshot") == 0) send_screenshot();
+            if (audio_test_command(cmd_buf)) { /* handled, including busy guard */ }
+            else if (strcmp(cmd_buf, "screenshot") == 0) send_screenshot();
             else if (strcmp(cmd_buf, "buzz") == 0)  sound_hal_play_reset();
             cmd_pos = 0;
         } else if (cmd_pos < CMD_BUF_SIZE - 1) {
             cmd_buf[cmd_pos++] = c;
+        } else {
+            cmd_overflow = true;
         }
     }
 }
@@ -261,6 +271,7 @@ extern "C" void board_init(void);
 
 void setup() {
     Serial.begin(115200);
+    audio_test_init();
     delay(300);
     Serial.println("{\"ready\":true}");
 
@@ -443,6 +454,7 @@ void loop() {
     }
 
     check_serial_cmd();
+    audio_test_tick();
 
     BleArtwork artwork;
     if (ble_take_artwork(&artwork)) ui_update_artwork(&artwork);

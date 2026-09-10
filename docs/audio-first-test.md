@@ -1,6 +1,42 @@
 # First audio test — ten seconds to the Mac over USB
 
-Date: 2026-09-09. Status: plan only; audio capture is not implemented or tested.
+Date: 2026-09-09. Status: implemented; USB capture and a prompted three-foot
+speech take verified structurally. Human listening verdict, six-foot test, and
+live work-Mac BLE coexistence remain pending.
+
+## Run it
+
+The optional `waveshare_amoled_216_audio_test` build contains the complete current
+Clawdmeter display plus the manual audio test. The normal
+`waveshare_amoled_216` build does not contain microphone capture.
+
+From the project directory on the connected Mac:
+
+```bash
+./audio-test-mac.sh --info
+./audio-test-mac.sh --output "$HOME/Downloads/Clawdmeter-audio-tests/speech-3ft.wav"
+```
+
+Wait for **RECORDING NOW**, then speak normally for ten seconds. The microphone
+stops before USB transfer begins. The command prints the saved WAV path and
+diagnostics. Listen by opening that file in Finder/QuickTime. Run again with a
+different filename for the six-foot test. Existing files are never overwritten.
+`--mic 2` selects the other physical microphone; the default is microphone 1.
+Both currently use 30 dB ADC gain. `--port /dev/cu.usbmodemNNNNN` selects a USB
+device explicitly; auto-detection works only when there is exactly one candidate.
+`--info` never records; Control-C cancels an in-progress test. Close serial
+monitors before running. The wrapper uses an existing Python/pyserial environment.
+
+To build and flash (normal upload, preserve NVS and the work-Mac bond):
+
+```bash
+pio run -d firmware -e waveshare_amoled_216_audio_test
+pio run -d firmware -e waveshare_amoled_216_audio_test -t upload --upload-port /dev/cu.usbmodemNNNNN
+./daemon/.venv/bin/python -m pytest daemon/tests tools/tests -q
+```
+
+Keep the Mac-mini BLE writer stopped and its relay running. Returning to the
+normal build removes audio capture without removing any existing display feature.
 
 ## Outcome and scope
 
@@ -32,9 +68,12 @@ upload is included in this milestone.
 
 - Extend the existing Arduino/PlatformIO application for the Waveshare 2.16 board,
   retaining the pinned toolchain, display features, and Bluetooth behavior.
-- Use a supported Espressif ES7210 driver and verified Waveshare configuration.
-  Confirm the ADC address, I2S slot layout, and microphone channel against the
-  exact-board example before coding. ES8311 remains the speaker path on this board.
+- Uses the Espressif-origin ES7210 driver from Waveshare's pinned exact-board
+  example, with local error-propagation fixes (see its vendored README/license).
+  The schematic confirms ADC address 0x40 and physical microphones on MIC1/2.
+  SDOUT1 connects through R38 to GPIO10; MIC3 is the speaker-reference/AEC input,
+  not a room microphone. Do not copy the example's MIC3/4 gain as the ambient
+  microphone configuration. ES8311 remains the unused speaker path.
 - Target 16 kHz, signed 16-bit little-endian PCM, one selected microphone channel:
   160,000 samples for ten seconds, occupying 320,000 bytes. The Mac adds a standard
   WAV header, producing a 320,044-byte file.
@@ -73,21 +112,30 @@ wait until the storage milestone. Do not change working display pins incidentall
 
 Extend the existing serial command interface with one fixed-duration capture
 request and status responses. Reject another capture or screenshot while busy.
-Send a versioned header containing recording ID, format, sample count, byte
-length, and CRC32, followed by that exact number of PCM bytes and an end marker.
+Implemented framing is newline-delimited `AUDIO1 {json}`: recording ID, format,
+sample count, byte length, and CRC32 in a `begin` packet, then numbered `data`
+packets containing up to 192 PCM bytes encoded as hex, and an `end` packet with
+the CRC. `start`, `health`, `memory`, and `error` packets report lifecycle and
+diagnostics. The receiver requires exactly 320,000 decoded PCM bytes.
 
-Serial already carries logs and screenshots. Serialize all serial writers for
-the binary response so unrelated text cannot corrupt it. Transfer from a worker
-in bounded chunks, yielding between writes; disconnected or blocked USB must time
-out without freezing LVGL or BLE. Free the recording buffer on completion or a
-bounded failure timeout.
+This intentionally replaces the initially proposed raw binary stream. Each
+bounded packet is a single HWCDC write, serialized by the existing TX mutex;
+leading newlines and hex encoding keep ordinary logs out of audio frames without
+a global logging lock. The receiver ignores ordinary log lines and rejects
+malformed/missing/duplicate/out-of-order/checksum-invalid audio. It never saves
+corrupt audio as a completed WAV. Firmware yields between packets, uses a 20 ms
+TX timeout and a 30-second total transfer bound, and frees its recording buffer
+on completion or failure. Screenshots and second recordings are rejected while busy.
 
 The Python utility must validate format, bounded length, checksum, and completion
 before finalizing the WAV from a temporary file. It opens only the selected USB
 port, tolerates boot messages, and does not intentionally reset the board via
 DTR/RTS. A serial monitor must not own the port concurrently. Measure actual USB
 throughput and allow a generous bounded timeout rather than predicting transfer
-speed from the nominal 115200 baud setting.
+speed from the nominal 115200 baud setting. USB readiness probes may be retried
+because the first response can be lost during endpoint opening; the recording
+request itself is NEVER automatically retried. Mic setup occurs only on that
+explicit request. Capture has bounded 250 ms I2S reads and a 12-second deadline.
 
 Store recordings and raw diagnostics outside Git, for example in
 `/Users/macmini/Downloads/Clawdmeter-audio-tests/`. No automatic upload or ingestion.
@@ -130,7 +178,42 @@ recording reliability, Wi-Fi coexistence, or SD storage behavior.
 
 Deliverables: test firmware, Mac capture utility, three WAVs, and a brief results
 record covering channel/gain, sample diagnostics, memory, display behavior, and
-limitations. Writing this plan does not initiate implementation or recording.
+limitations. Nothing starts recording at boot or merely because USB is connected.
+
+## Hardware results and microphone startup fix
+
+- Initial transport-only recordings: 160,000 samples each, 320,044-byte WAVs,
+  matching CRC32; capture 9,999 ms; USB transfer 1.67 seconds each. The room was
+  initially assumed quiet (RMS around 27 / 32,768), but a prompted speech take
+  had the same noise-only signature. **These initial files do not prove working
+  microphones.** Investigation found the older driver left register 0x40 at
+  0xC3: PDN_ANA=1 powers down the analog input. Use the current Espressif startup
+  sequence (0x43, mic low-power registers 0x08, reset/enable 0x71 then 0x41),
+  not the older Waveshare sequence. Shutdown sets 0x40=0xC0; both analog states,
+  input gain and shutdown clock/power registers are read-back checked.
+- After that fix, `speech-3ft-fixed.wav` responds to the prompted speech:
+  peak 1,193, RMS 136.7 versus about 35–45 in its opening quiet windows;
+  no clipped samples. Exactly 160,000 samples / 320,044 WAV bytes, CRC verified,
+  capture 9,999 ms and USB transfer 1.67 seconds. Raw playback was initiated on
+  the Mac for Chris to judge; signal statistics alone do not prove intelligibility.
+- No reported I2S overruns or read errors. The normal display loop executed
+  324 and 821 iterations during those captures; maximum observed loop gap 104 ms.
+  The post-fix speech take had 179 loop iterations and a maximum gap of 123 ms.
+  Screenshot capture also succeeded after the earlier repeat/cancel tests.
+- Runtime free internal heap before each capture was exactly 92,136 bytes,
+  dropping to 82,196 during capture. Free PSRAM before each was 7,300,888 bytes,
+  dropping to 6,973,156. The identical next-capture baseline showed resources
+  returning after worker deletion; this is a short repeat check, not a soak test.
+- A concurrent recording was rejected as busy. Explicit cancellation stopped
+  capture, returned an error, released resources, and restored `busy:false`.
+- Pausing Python's reads for four seconds during transfer still completed and
+  restored `busy:false`; macOS buffered the USB traffic. This did not force a
+  physical disconnection or establish recovery from cable removal.
+- Both normal and optional audio-test firmware builds pass. Host suite: 184
+  passed, 2 existing skips and 2 pre-existing Windows coroutine warnings.
+- Pre-audio rollback artifacts are retained locally outside Git in
+  `/Users/macmini/Downloads/clawdmeter-pre-audio-GI7xlF/`, source `6f9154d`.
+  Test recordings are local only in `~/Downloads/Clawdmeter-audio-tests/`.
 
 ## Later processing responsibilities
 

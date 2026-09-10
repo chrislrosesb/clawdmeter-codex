@@ -157,7 +157,7 @@ unauthenticated, even if local Codex logs still exist.
    hardware. Check that Claude, Codex, music, and Pluribus each appear when their
    source is live and that the daemon does not enter a disconnect loop.
 
-### Planned first audio test
+### Manual first audio test — optional firmware build
 
 See [the first audio test plan](docs/audio-first-test.md) (2026-09-09).
 Scope: explicitly triggered ten-second microphone capture to PSRAM, then USB
@@ -171,8 +171,40 @@ normally flashed over USB and boot-verified on the physical device on 2026-09-09
 touch/PMU/IMU initialized, the saved work-Mac owner loaded, and the randomized
 splash selected `racing car`. No NVS erase or re-pairing was performed. The
 Mac-mini BLE writer was stopped and its relay left running. Live widget/BLE
-regression verification awaits the bonded work Mac. Capture and the Mac WAV
-receiver remain unimplemented; this firmware does not record audio.
+regression verification awaits the bonded work Mac.
+
+The subsequent `waveshare_amoled_216_audio_test` environment adds explicitly
+triggered ten-second ES7210 microphone capture and a Mac USB-to-WAV receiver,
+while retaining every existing screen. The normal build remains audio-disabled.
+Use `./audio-test-mac.sh --info` for a non-recording readiness check, then
+`./audio-test-mac.sh --output "$HOME/Downloads/Clawdmeter-audio-tests/speech-3ft.wav"`
+to record. Wait for `RECORDING NOW`; every take requires a new invocation and
+filename. No SD, Wi-Fi, VAD, transcription, upload, button remapping, or automatic
+recording is present. Keep the Mac-mini BLE writer stopped during these USB tests.
+
+Important hardware lesson: the schematic connects physical microphones to
+ES7210 MIC1/2 and SDOUT1 → GPIO10. MIC3 is the speaker-reference/AEC circuit;
+do not mistake the vendor example's MIC3/4 high-gain settings for the room mics.
+Test defaults: microphone 1 (or `--mic 2`), 30 dB gain, 16 kHz / 16-bit mono,
+MCLK GPIO42 at 256fs, BCLK9 / WS45. Modern IDF I2S RX reads stereo and explicitly
+extracts the chosen slot. The shared Wire bus keeps its transaction locking;
+no second I2C driver, display-pin change, or SD initialization is permitted here.
+
+The older Waveshare ES7210 example also left analog power-down bit 7 set in
+register 0x40 (0xC3): valid digital samples were only ADC noise, not microphone
+audio. Startup now follows current Espressif settings (0x43, mic low-power 0x08,
+enable/reset 0x71 → 0x41); shutdown uses 0xC0. The HAL read-back checks on/off
+states and gain. Do not revert these as incidental driver changes.
+
+Hardware captures verified exact ten-second WAVs, CRC, 1.67-second USB
+transfers, zero reported overruns, and a responsive display loop. After the
+analog fix, the prompted three-foot speech take had clear signal variation
+(peak 1,193, RMS 136.7); user listening confirmation is still needed. Repeated
+captures returned to the same memory baseline; cancellation and busy rejection
+passed. This does not yet prove speech intelligibility at three/six feet or
+live BLE/artwork coexistence with the work Mac. Results and protocol are in
+`docs/audio-first-test.md`. Preserve the optional build when updating this test
+device; flashing the normal environment intentionally removes recording support.
 
 For the full audio project, speech detection and recording decisions belong on
 the Clawdmeter. Transcription may run on either the Mac mini or the office Mac,
