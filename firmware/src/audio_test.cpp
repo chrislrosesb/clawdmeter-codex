@@ -70,7 +70,7 @@ void worker(void* arg) {
     if (!error) {
         memory(id, "capturing");
         if (!packet("{\"id\":\"%08lx\",\"type\":\"start\",\"mic\":%u,"
-                    "\"gain_db\":30,\"seconds\":10}", id, request.mic)) error = "usb_start";
+                    "\"gain_db\":37.5,\"seconds\":10}", id, request.mic)) error = "usb_start";
         uint32_t began = millis();
         const uint32_t initial_loops = loop_count;
         max_loop_gap = 0;

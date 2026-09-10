@@ -1,8 +1,9 @@
 # First audio test — ten seconds to the Mac over USB
 
 Date: 2026-09-09. Status: implemented; USB capture and a prompted three-foot
-speech take verified structurally. Human listening verdict, six-foot test, and
-live work-Mac BLE coexistence remain pending.
+speech take verified. Chris confirmed intelligibility but found playback quiet.
+Higher-gain retest also passes structural/clipping checks; its listening verdict,
+six-foot test, and live work-Mac BLE coexistence remain pending.
 
 ## Run it
 
@@ -22,7 +23,7 @@ stops before USB transfer begins. The command prints the saved WAV path and
 diagnostics. Listen by opening that file in Finder/QuickTime. Run again with a
 different filename for the six-foot test. Existing files are never overwritten.
 `--mic 2` selects the other physical microphone; the default is microphone 1.
-Both currently use 30 dB ADC gain. `--port /dev/cu.usbmodemNNNNN` selects a USB
+Both currently use 37.5 dB ADC gain. `--port /dev/cu.usbmodemNNNNN` selects a USB
 device explicitly; auto-detection works only when there is exactly one candidate.
 `--info` never records; Control-C cancels an in-progress test. Close serial
 monitors before running. The wrapper uses an existing Python/pyserial environment.
@@ -195,7 +196,16 @@ limitations. Nothing starts recording at boot or merely because USB is connected
   peak 1,193, RMS 136.7 versus about 35–45 in its opening quiet windows;
   no clipped samples. Exactly 160,000 samples / 320,044 WAV bytes, CRC verified,
   capture 9,999 ms and USB transfer 1.67 seconds. Raw playback was initiated on
-  the Mac for Chris to judge; signal statistics alone do not prove intelligibility.
+  the Mac. Chris confirmed it sounded okay but was quiet even through AirPods.
+  That sample used 30 dB analog gain. The next build raises gain to 37.5 dB
+  (+7.5 dB, about 2.37× amplitude for identical input). Retest at the same distance
+  and check clipping before judging the gain change; no Mac normalization is used.
+- The 37.5 dB firmware was flashed and tested in `speech-3ft-gain375.wav`:
+  peak 1,541, RMS 172.34, zero clipped samples, valid CRC, 9,999 ms capture and
+  1.67-second USB transfer. The display loop ran 202 times (maximum gap 123 ms),
+  with the same memory baseline and no reported overruns. This is a separate
+  spoken take, not a calibrated source-level comparison. Playback was initiated
+  for Chris; final volume preference is pending.
 - No reported I2S overruns or read errors. The normal display loop executed
   324 and 821 iterations during those captures; maximum observed loop gap 104 ms.
   The post-fix speech take had 179 loop iterations and a maximum gap of 123 ms.

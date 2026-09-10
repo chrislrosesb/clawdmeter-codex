@@ -185,7 +185,7 @@ recording is present. Keep the Mac-mini BLE writer stopped during these USB test
 Important hardware lesson: the schematic connects physical microphones to
 ES7210 MIC1/2 and SDOUT1 → GPIO10. MIC3 is the speaker-reference/AEC circuit;
 do not mistake the vendor example's MIC3/4 high-gain settings for the room mics.
-Test defaults: microphone 1 (or `--mic 2`), 30 dB gain, 16 kHz / 16-bit mono,
+Test defaults: microphone 1 (or `--mic 2`), 37.5 dB gain, 16 kHz / 16-bit mono,
 MCLK GPIO42 at 256fs, BCLK9 / WS45. Modern IDF I2S RX reads stereo and explicitly
 extracts the chosen slot. The shared Wire bus keeps its transaction locking;
 no second I2C driver, display-pin change, or SD initialization is permitted here.
@@ -199,9 +199,15 @@ states and gain. Do not revert these as incidental driver changes.
 Hardware captures verified exact ten-second WAVs, CRC, 1.67-second USB
 transfers, zero reported overruns, and a responsive display loop. After the
 analog fix, the prompted three-foot speech take had clear signal variation
-(peak 1,193, RMS 136.7); user listening confirmation is still needed. Repeated
+(peak 1,193, RMS 136.7 at 30 dB). Chris confirmed it sounded okay but was quiet
+even on AirPods, so ADC gain was raised to 37.5 dB (+7.5 dB, approximately 2.37×
+sample amplitude for the same input). The higher-gain firmware was flashed and
+a new three-foot take verified: peak 1,541, RMS 172.34, zero clipped samples or
+reported overruns, 9,999 ms capture, and 1.67-second USB transfer. Independent
+spoken takes are not a calibrated gain measurement. The higher-gain listening
+verdict is pending; this is device-side analog gain, not Mac normalization or AGC. Repeated
 captures returned to the same memory baseline; cancellation and busy rejection
-passed. This does not yet prove speech intelligibility at three/six feet or
+passed. Six-foot speech performance is still unverified, as is
 live BLE/artwork coexistence with the work Mac. Results and protocol are in
 `docs/audio-first-test.md`. Preserve the optional build when updating this test
 device; flashing the normal environment intentionally removes recording support.

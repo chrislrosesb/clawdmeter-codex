@@ -27,5 +27,5 @@ modern IDF standard-I2S RX API instead, with explicit stereo-slot extraction,
 bounded reads, and overflow counting. The schematic shows physical microphones
 on ADC MIC1/2 and SDOUT1 connected through R38 to GPIO10. ADC MIC3 is the speaker
 reference path; the example's high gain on MIC3/4 must NOT be confused with the
-ambient microphones. We enable MIC1/2 at 30 dB, 16 kHz, 16-bit standard I2S,
+ambient microphones. We enable MIC1/2 at 37.5 dB, 16 kHz, 16-bit standard I2S,
 MCLK=256fs on GPIO42. No VAD code is copied for this test.
