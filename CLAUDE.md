@@ -166,8 +166,13 @@ Pluribus ingestion. Chris deferred a mute control for this bounded test.
 Chris removed notification chimes from the 2.16-inch build: speaker amp stays off,
 sound HAL calls are no-ops, and the build excludes `chime.cpp` / `es8311.c`.
 I2S is left free for microphone capture; no chime handoff or restoration is needed.
-Other board ports retain their existing sound support. This source change needs
-a normal flash before it affects the device; capture remains unimplemented.
+Other board ports retain their existing sound support. Firmware `6f9154d` was
+normally flashed over USB and boot-verified on the physical device on 2026-09-09:
+touch/PMU/IMU initialized, the saved work-Mac owner loaded, and the randomized
+splash selected `racing car`. No NVS erase or re-pairing was performed. The
+Mac-mini BLE writer was stopped and its relay left running. Live widget/BLE
+regression verification awaits the bonded work Mac. Capture and the Mac WAV
+receiver remain unimplemented; this firmware does not record audio.
 
 For the full audio project, speech detection and recording decisions belong on
 the Clawdmeter. Transcription may run on either the Mac mini or the office Mac,
