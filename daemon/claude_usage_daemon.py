@@ -31,6 +31,7 @@ try:
     from daemon import pluribus_activity as pluribus_source
     from daemon import agent_messages
     from daemon import chat_replies
+    from daemon import agent_clips
     from daemon import relay_source
     try:
         from daemon import usb_link
@@ -41,6 +42,7 @@ except ImportError:
     import pluribus_activity as pluribus_source
     import agent_messages
     import chat_replies
+    import agent_clips
     import relay_source
     try:
         import usb_link
@@ -776,6 +778,16 @@ class Session:
             log(f"Write failed: {e}")
             return False
 
+    async def write_packet(self, packet: bytes) -> int:
+        """One binary packet (agent clip start/chunk). BLE can't report "have"."""
+        try:
+            async with self.write_lock:
+                await self.client.write_gatt_char(RX_CHAR_UUID, packet, response=True)
+            return 1
+        except (BleakError, OSError) as e:
+            log(f"Clip write failed: {e}")
+            return 0
+
     async def write_artwork(self, frame: bytes, generation: int,
                             width: int = 300, height: int = 300,
                             encoding: int = ART_ENCODING_JPEG) -> bool:
@@ -918,6 +930,8 @@ async def run_session(session, stop_event: asyncio.Event, is_connected,
     next_usb_check = time.time() + USB_CHECK_INTERVAL
     next_rooms_poll = 0.0
     rooms_sent: set[str] = set()   # reply ids written this session; the device dedups too
+    wired = usb_link is not None and isinstance(session, usb_link.UsbSession)
+    clips = agent_clips.ClipSender(agent_clips.load_clips(), chunk=1024 if wired else 230)
     while is_connected() and not stop_event.is_set():
         now = time.time()
         elapsed = now - last_poll
@@ -1034,6 +1048,10 @@ async def run_session(session, stop_event: asyncio.Event, is_connected,
                 used_successfully = True
             if len(rooms_sent) > 200:
                 rooms_sent = {r["i"] for r in replies or []}
+
+        # Agent animation clips trickle over in the background once usage is up.
+        if used_successfully and not clips.done:
+            await clips.step(session, 64 * 1024 if wired else 4 * 1024)
 
         try:
             await asyncio.wait_for(session.refresh_requested.wait(), timeout=1.0)

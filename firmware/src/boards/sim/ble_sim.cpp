@@ -140,7 +140,7 @@ void ble_send_ack(void)  {}
 void ble_send_nack(void) { printf("[sim] payload NACKed — check the scenario JSON\n"); }
 void ble_request_refresh(void) {}
 void ble_set_battery_level(int pct) { (void)pct; }
-bool ble_usb_packet(const uint8_t* data, size_t len) { (void)data; (void)len; return false; }
+int ble_usb_packet(const uint8_t* data, size_t len) { (void)data; (void)len; return 0; }
 void ble_usb_note_alive(void) {}
 bool ble_usb_active(void) { return false; }
 bool ble_take_artwork(BleArtwork* out) {

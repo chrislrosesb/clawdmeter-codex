@@ -4,6 +4,27 @@ Short running notes for the next session. The canonical deployment runbook is
 `CLAUDE.md`; the shared agent-bridge handoff and decision log hold the Phase 1/2
 history.
 
+## 2026-10-10 — Agent animations in the idle rotation
+
+**What it does:** every idle (Clawd) turn now opens with one of Chris's agents
+animating on a cream card with her name (Tori shaking pompoms, Mila sipping
+coffee, holding up a pitch, taking a call), then Clawd finishes the turn. Clips
+rotate. They need the Mac to send them after each device reboot (about a
+minute over USB; several minutes in the background over Bluetooth).
+
+**Adding or refreshing clips:** edit `CLIPS` in `tools/make_agent_clips.py`
+(agent id + move names from AgentRig's `FaceMove`), run it with the daemon venv,
+commit `daemon/agent_clips/`, restart the daemon. No firmware change. The
+recorder lives on the other session's branch `claude/pluribus-animation-redesign-0ffca0`
+(worktree `agents-personality-efficiency-f2962f`); once it merges, point `--rig`
+at `~/pluribus-2.0/apple/AgentRig`. Only Tori and Mila have rigs today; others
+need art from that project first.
+
+**Verified on hardware:** both clips transferred over USB (24-34 s each), Mila
+played with correct colors (first build had red/blue swapped: LVGL's tjpgd
+outputs B,G,R). Not yet verified: clip transfer over Bluetooth, and playback
+smoothness by eye (frames advanced as expected in screenshots).
+
 ## 2026-10-10 — Chat and Room replies on the device
 
 **What it does:** every finished agent reply in any shared chat or Room pops up

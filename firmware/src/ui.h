@@ -18,6 +18,8 @@ void ui_update_now_playing(const NowPlayingData* data);
 bool ui_update_agents(const AgentMessagesData* data);
 // One chat/Room reply ({"rm":...}); queued with check-ins. Same return meaning.
 bool ui_add_room_reply(const AgentMessage* reply);
+// Same as a tap on the agent screen: clear everything waiting (device only).
+void ui_agents_dismiss_all(void);
 void ui_update_artwork(const BleArtwork* artwork);
 void ui_tick_anim(void);
 void ui_tick_screen_rotation(void);

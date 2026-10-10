@@ -337,7 +337,8 @@ static void check_serial_cmd() {
             return;   // let loop() consume this payload before the next one
         } else if (line_buf[0] == '@') {
             int n = decode_hex_line(line_buf, len);
-            Serial.println(n > 0 && ble_usb_packet((const uint8_t*)line_buf, n) ? "#ok" : "#err");
+            int r = n > 0 ? ble_usb_packet((const uint8_t*)line_buf, n) : 0;
+            Serial.println(r == 2 ? "#have" : r ? "#ok" : "#err");
         } else if (strcmp(line_buf, "clawdmeter?") == 0) {
             ble_usb_note_alive();
             Serial.println("CLAWDMETER usb1");
@@ -346,6 +347,7 @@ static void check_serial_cmd() {
         else if (strcmp(line_buf, "screenshot") == 0) send_screenshot();
         else if (strcmp(line_buf, "buzz") == 0)  sound_hal_play_reset();
         else if (strncmp(line_buf, "agentdemo", 9) == 0) agent_demo(atoi(line_buf + 9));
+        else if (strcmp(line_buf, "agentclear") == 0) ui_agents_dismiss_all();   // = a tap
     }
 }
 

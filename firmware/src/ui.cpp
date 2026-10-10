@@ -1,5 +1,6 @@
 #include "ui.h"
 #include "splash.h"
+#include "agent_clips.h"
 #include <lvgl.h>
 #include <src/misc/cache/instance/lv_image_cache.h>
 #include <time.h>
@@ -1065,6 +1066,9 @@ void ui_init(void) {
     init_music_screen(scr);
     init_agents_screen(scr);
     splash_init(scr);
+    agent_clips_create(scr);   // above the splash: agents take some idle turns
+    if (agent_clips_root())
+        lv_obj_add_event_cb(agent_clips_root(), global_click_cb, LV_EVENT_CLICKED, NULL);
 
     if (splash_get_root()) {
         lv_obj_add_event_cb(splash_get_root(), global_click_cb, LV_EVENT_CLICKED, NULL);
@@ -1628,6 +1632,10 @@ static void update_view_state(void) {
 }
 
 void ui_tick_anim(void) {
+    if (current_screen == SCREEN_SPLASH && agent_clips_playing() && !agent_clips_tick()) {
+        agent_clips_stop();
+        splash_show();   // clip done: Clawd gets the rest of the idle turn
+    }
     update_music_progress();
     update_agents();
     // The Codex view shows live numbers only: once the link drops or data goes
@@ -1732,6 +1740,10 @@ static void global_click_cb(lv_event_t* e) {
 // then resume the normal rotation from the start.
 static void agents_click_cb(lv_event_t* e) {
     (void)e;
+    ui_agents_dismiss_all();
+}
+
+void ui_agents_dismiss_all(void) {
     for (int s = 0; s < agents_visible_count; ++s)
         agent_id_add(agents_dismissed, &agents_dismissed_next,
                      agents_visible[s]->id);
@@ -1754,9 +1766,14 @@ void ui_show_screen(screen_t screen) {
     if (music_container) lv_obj_add_flag(music_container, LV_OBJ_FLAG_HIDDEN);
     if (agents_container) lv_obj_add_flag(agents_container, LV_OBJ_FLAG_HIDDEN);
     splash_hide();
+    agent_clips_stop();
 
     switch (screen) {
-    case SCREEN_SPLASH:  splash_show(); break;
+    case SCREEN_SPLASH:
+        // Each idle turn opens with an agent clip when one is on the device,
+        // then hands the rest of the turn to Clawd (ui_tick_anim).
+        if (!agent_clips_start()) splash_show();
+        break;
     case SCREEN_USAGE:   lv_obj_clear_flag(usage_container, LV_OBJ_FLAG_HIDDEN); break;
     case SCREEN_CODEX:   lv_obj_clear_flag(codex_container, LV_OBJ_FLAG_HIDDEN); break;
     case SCREEN_NOW_PLAYING:

@@ -1,4 +1,5 @@
 #include "ble.h"
+#include "agent_clips.h"
 #include <Arduino.h>
 #include <NimBLEDevice.h>
 #include <NimBLEHIDDevice.h>
@@ -409,6 +410,10 @@ class RxCallbacks : public NimBLECharacteristicCallbacks {
         }
         if (ble_usb_active()) return;   // the Mac on the USB cable owns the display
         std::string val = chr->getValue();
+        if (val.length() >= 2 && (uint8_t)val[0] == CLIP_MAGIC) {
+            agent_clip_packet((const uint8_t*)val.data(), val.length());
+            return;
+        }
         if (val.length() >= 2 && (uint8_t)val[0] == ART_MAGIC) {
             receive_artwork_packet((const uint8_t*)val.data(), val.length());
             return;
@@ -588,19 +593,20 @@ bool ble_usb_active(void) {
     return usb_last_ms != 0 && millis() - usb_last_ms < USB_ACTIVE_MS;
 }
 
-bool ble_usb_packet(const uint8_t* data, size_t len) {
-    if (!data || len == 0) return false;
+int ble_usb_packet(const uint8_t* data, size_t len) {
+    if (!data || len == 0) return 0;
     ble_usb_note_alive();
+    if (len >= 2 && data[0] == CLIP_MAGIC) return agent_clip_packet(data, len);
     if (len >= 2 && data[0] == ART_MAGIC) {
         receive_artwork_packet(data, len);
-        return true;
+        return 1;
     }
-    if (len >= BLE_BUF_SIZE || data_ready) return false;   // one JSON per loop
+    if (len >= BLE_BUF_SIZE || data_ready) return 0;   // one JSON per loop
     memcpy(rx_buf, data, len);
     rx_buf[len] = '\0';
     data_ready = true;
     has_received_data = true;
-    return true;
+    return 1;
 }
 
 bool ble_take_artwork(BleArtwork* out) {

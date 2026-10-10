@@ -51,6 +51,18 @@ conflict. Known-good baseline: commit `e047ee4` on 2026-09-08.
   in 5 s turns with two-line captions, the Room title in the header, a row of up
   to 4 distinct faces, and clears on tap. The relay carries them in a separate
   `rooms` slot; a work Mac needs `git pull` + daemon restart to forward them.
+- Agent animation clips (2026-10-10): each idle (splash) turn opens with a
+  Pluribus agent clip, then Clawd gets the rest of the turn. Clips are rendered
+  on the Mac mini from the Pluribus AgentRig recorder (animation-redesign
+  worktree, read-only, scratch build) by `tools/make_agent_clips.py` into
+  `daemon/agent_clips/*.clip` (288 px rounded card, 10 fps baseline JPEG,
+  ~0.9 MB each; today Tori pompoms/cheer/wink and Mila coffee/pitch/call). The
+  daemon streams them once per connection in slices (`daemon/agent_clips.py`;
+  ~30 s per clip over USB, minutes over BLE); the device answers `#have` over
+  USB for clips it holds. Firmware `agent_clips.cpp` keeps up to 6 in PSRAM
+  until reboot (packets magic 0xA6, crc = identity) and decodes frames with
+  LVGL's bundled tjpgd, which emits **B,G,R** (swap when packing RGB565).
+  Serial `agentclear` = a tap on the agent screen (useful to reach the splash).
 - USB cable link (2026-10-10): when the device is plugged into a Mac running the
   daemon, it drives the display over USB serial instead of Bluetooth
   (`daemon/usb_link.py`, stdlib termios, no pyserial). Line protocol on the

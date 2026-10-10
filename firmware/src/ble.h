@@ -45,8 +45,9 @@ void ble_set_battery_level(int pct);
 // USB link: a Mac on the cable feeds the same packets the RX characteristic
 // takes (usage/music/agent JSON, artwork frames). While USB has been active
 // recently, BLE data writes are ignored so the cabled Mac is the one owner.
-// Buttons still use BLE HID. Returns false for a packet that was rejected.
-bool ble_usb_packet(const uint8_t* data, size_t len);
+// Buttons still use BLE HID. Returns 0 rejected, 1 accepted, 2 "already have"
+// (an agent clip the device holds; the Mac skips sending it).
+int ble_usb_packet(const uint8_t* data, size_t len);
 void ble_usb_note_alive(void);
 bool ble_usb_active(void);
 

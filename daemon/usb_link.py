@@ -156,16 +156,19 @@ class UsbSession:
     def is_connected(self) -> bool:
         return self.connected
 
-    def _send_line(self, line: bytes) -> bool:
+    def _send_line(self, line: bytes) -> int:
+        """1 = "#ok", 2 = "#have" (clip already on the device), 0 = "#err"."""
         for attempt in range(2):
             self.port.write(line + b"\n")
-            reply = self.port.wait_for((b"#ok", b"#err"), ACK_TIMEOUT)
+            reply = self.port.wait_for((b"#ok", b"#err", b"#have"), ACK_TIMEOUT)
             if reply is None:
                 raise OSError("no reply from device")
             if reply == b"#ok":
-                return True
+                return 1
+            if reply == b"#have":
+                return 2
             time.sleep(0.05)   # "#err" for JSON usually means the last one is still queued
-        return False
+        return 0
 
     async def _run(self, fn, *args):
         try:
@@ -198,6 +201,10 @@ class UsbSession:
         if ok:
             self._last_keepalive = time.monotonic()
         return bool(ok)
+
+    async def write_packet(self, packet: bytes) -> int:
+        """One binary packet (agent clip start/chunk); 0/1/2 as ``_send_line``."""
+        return int(await self._run(self._send_line, b"@" + packet.hex().encode()) or 0)
 
     async def write_artwork(self, frame: bytes, generation: int,
                             width: int = 300, height: int = 300,
