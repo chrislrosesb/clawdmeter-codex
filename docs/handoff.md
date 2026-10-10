@@ -16,17 +16,20 @@ also marks them read in Pluribus so the iPhone notification clears too.
 check-ins included, Team feed retired) and `rd` frames for ones no longer
 unread. Device reports taps (`#tap` over USB, TX value over BLE). Relay gained
 `POST /v1/read`. Pluribus Mac app fix (window must be in front to count as
-read) is committed and pushed in Pluribus (8c6de258) but **not yet on
-TestFlight**: another session had uncommitted work in Pluribus main, so the
-upload waits for Chris's go-ahead to avoid colliding build numbers.
+read, Pluribus 8c6de258) shipped in **TestFlight build 214** (iOS + macOS
+uploads both succeeded, 2026-10-10).
 
 **Verified on hardware (demo messages):** pop, 15 s hand-back to Clawd, corner
 hint on usage, rotation turn, tap report line. Not yet: live read-clearing with
 real messages, BLE tap reading on the work Mac (needs `git pull` + restart there).
 
-**Also found, not fixed (Pluribus server):** `push.py` `send_read_sync` returns
-early when the badge is unchanged, which skips the silent "clear" push, so an
-iPhone notification can stick until the app is opened.
+**Pluribus server fix (8e732bf7, live):** `push.py` `send_read_sync` used to
+return early when the badge was unchanged, skipping the silent "clear" push, so
+an iPhone notification could stick. It now tracks alerted chats
+(`_notified_sessions`) and always clears them; the Pluribus server was
+restarted (`make restart`). Note: Pluribus origin/main (422cd93b) is ahead of
+the local Pluribus main checkout, which another session had dirty; it was left
+alone. Next Pluribus TestFlight build number must be 215 or higher.
 
 ## 2026-10-10 — Agent animations in the idle rotation
 
