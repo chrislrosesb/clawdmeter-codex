@@ -33,6 +33,21 @@ conflict. Known-good baseline: commit `e047ee4` on 2026-09-08.
 - The display rotates every 30 seconds among the Clawd animation, Claude usage,
   Codex usage, and Apple Music Now Playing while music is playing. Touch advances
   early and restarts the 30-second timer.
+- **Current agent-message behavior (2026-10-10, supersedes the two bullets
+  below where they differ):** every unread agent message (chat/Room replies and
+  proactive check-ins, all from session receipts + `unread_count`) under 5
+  minutes old is sent as an `rm` frame; the Team-feed `am` list is retired and
+  sent empty. A new message pops the agent screen for 15 s, then the normal
+  rotation resumes and waiting messages take a 15 s turn after music; a corner
+  face + count shows on the usage/Codex/music screens. Messages clear when read
+  in Pluribus on any device (host sends `{"rd":[ids]}`), after 5 minutes, or on
+  a tap. A tap also marks them read in Pluribus (clearing the phone): the
+  device prints `#tap id,...` over USB and stores `{"tap":"ids","s":seq}` as the
+  readable TX value for BLE (acks now notify without overwriting it; the
+  daemon reads it every 5 s, never subscribes). In relay mode the work Mac posts
+  taps to the relay's `POST /v1/read`. The Pluribus Mac app only counts a chat
+  as read when its window is truly in front (`WindowFrontmostReader`, Pluribus
+  commit 8c6de258; needs a TestFlight build to reach Chris's Mac).
 - Agent messages (2026-10-10) replaced the old Pluribus activity screen. When a
   Pluribus agent has a message Chris has not dismissed in the app, the agent
   screen interrupts the rotation and holds until tapped: one agent shows its face

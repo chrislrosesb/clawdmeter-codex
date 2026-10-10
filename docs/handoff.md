@@ -4,6 +4,30 @@ Short running notes for the next session. The canonical deployment runbook is
 `CLAUDE.md`; the shared agent-bridge handoff and decision log hold the Phase 1/2
 history.
 
+## 2026-10-10 — Agent messages behave like phone notifications
+
+**What changed (Chris's choices):** a new message pops the agent screen for 15 s,
+then the normal rotation resumes; waiting messages get their own 15 s turn and a
+small face + count in the corner of the usage/Codex/music screens. Messages
+leave when read in Pluribus on any device, after 5 minutes, or on a tap; a tap
+also marks them read in Pluribus so the iPhone notification clears too.
+
+**How:** host sends only unread messages (session `unread_count` + receipts;
+check-ins included, Team feed retired) and `rd` frames for ones no longer
+unread. Device reports taps (`#tap` over USB, TX value over BLE). Relay gained
+`POST /v1/read`. Pluribus Mac app fix (window must be in front to count as
+read) is committed and pushed in Pluribus (8c6de258) but **not yet on
+TestFlight**: another session had uncommitted work in Pluribus main, so the
+upload waits for Chris's go-ahead to avoid colliding build numbers.
+
+**Verified on hardware (demo messages):** pop, 15 s hand-back to Clawd, corner
+hint on usage, rotation turn, tap report line. Not yet: live read-clearing with
+real messages, BLE tap reading on the work Mac (needs `git pull` + restart there).
+
+**Also found, not fixed (Pluribus server):** `push.py` `send_read_sync` returns
+early when the badge is unchanged, which skips the silent "clear" push, so an
+iPhone notification can stick until the app is opened.
+
 ## 2026-10-10 — Agent animations in the idle rotation
 
 **What it does:** every idle (Clawd) turn now opens with one of Chris's agents
