@@ -83,8 +83,8 @@ void sim_pump(void) {
         const char* screen = getenv("SIM_INITIAL_SCREEN");
         if (screen && strcmp(screen, "music") == 0)
             ui_show_screen(SCREEN_NOW_PLAYING);
-        else if (screen && strcmp(screen, "pluribus") == 0)
-            ui_show_screen(SCREEN_PLURIBUS);
+        else if (screen && strcmp(screen, "agents") == 0)
+            ui_show_screen(SCREEN_AGENTS);
         initial_screen_applied = true;
     }
 }

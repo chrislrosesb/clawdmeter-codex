@@ -42,12 +42,20 @@ struct NowPlayingData {
     uint16_t artwork_generation;
 };
 
-struct PluribusActivityData {
-    bool present;
-    int64_t id;
-    char kind[21];
-    char status[17];
-    char title[65];
-    char detail[65];
-    uint32_t age_minutes;
+// Pluribus agent messages waiting for Chris — the payload's "am" object,
+// newest message per agent (up to AGENT_MSG_MAX agents). Captions are
+// display-safe ASCII from the host; transcripts never reach the device.
+#define AGENT_MSG_MAX 3
+struct AgentMessage {
+    char id[13];            // Pluribus feed entry id (dismissal key)
+    char agent[17];         // Pluribus agent id, e.g. "champion" (face lookup)
+    char name[17];          // display name, e.g. "Tori"
+    char text[49];          // one-line caption
+    uint32_t age_minutes;   // age when the host observed it
+};
+
+struct AgentMessagesData {
+    uint8_t count;          // entries in msgs[]
+    uint16_t total;         // all waiting messages, across every agent
+    AgentMessage msgs[AGENT_MSG_MAX];
 };

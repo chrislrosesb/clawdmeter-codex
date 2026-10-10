@@ -24,7 +24,7 @@
 
 static UsageData usage = {};
 static NowPlayingData now_playing = {};
-static PluribusActivityData pluribus_activity = {};
+static AgentMessagesData agent_messages = {};
 
 // ---- LVGL draw buffers (partial render mode) ----
 // PSRAM-equipped boards (S3) can comfortably hold larger strips. PSRAM-free
@@ -164,37 +164,70 @@ static bool parse_now_playing_json(const char* json, NowPlayingData* out,
     return true;
 }
 
-// Parse a standalone Pluribus update. This explicit top-level dispatch keeps
-// {"pb":...} from ever falling through to the normal usage parser.
-static bool parse_pluribus_json(const char* json, PluribusActivityData* out,
-                                bool* recognized) {
+// Parse a standalone agent-messages update ({"am":...}). The retired
+// Pluribus activity frame ({"pb":...}) is still recognized and acknowledged
+// so an older host can never fall through to the usage parser.
+static bool parse_agent_messages_json(const char* json, AgentMessagesData* out,
+                                      bool* recognized, bool* legacy) {
     *recognized = false;
+    *legacy = false;
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, json);
     if (err) return false;
-    JsonVariantConst pb = doc["pb"];
-    if (pb.isUnbound()) return true;
-    *recognized = true;
-    if (pb.isNull()) {
-        *out = {};
-        out->present = false;
+    if (!doc["pb"].isUnbound()) {
+        *recognized = true;
+        *legacy = true;
         return true;
     }
-    if (!pb.is<JsonObjectConst>() || !pb["id"].is<int64_t>() ||
-        !pb["a"].is<uint32_t>()) return false;
-    const char* status = pb["s"] | "";
-    const char* title = pb["t"] | "";
-    if (!title[0] || (strcmp(status, "success") != 0 &&
-                      strcmp(status, "needs_review") != 0 &&
-                      strcmp(status, "failed") != 0)) return false;
-    out->present = true;
-    out->id = pb["id"].as<int64_t>();
-    strlcpy(out->kind, pb["k"] | "", sizeof(out->kind));
-    strlcpy(out->status, status, sizeof(out->status));
-    strlcpy(out->title, title, sizeof(out->title));
-    strlcpy(out->detail, pb["d"] | "", sizeof(out->detail));
-    out->age_minutes = pb["a"].as<uint32_t>();
+    JsonVariantConst am = doc["am"];
+    if (am.isUnbound()) return true;
+    *recognized = true;
+    AgentMessagesData parsed = {};
+    if (!am.isNull()) {
+        if (!am.is<JsonObjectConst>()) return false;
+        parsed.total = am["n"] | 0;
+        for (JsonVariantConst m : am["m"].as<JsonArrayConst>()) {
+            if (parsed.count >= AGENT_MSG_MAX) break;
+            const char* id = m["i"] | "";
+            const char* agent = m["g"] | "";
+            if (!id[0] || !agent[0] || !m["a"].is<uint32_t>()) return false;
+            AgentMessage& dst = parsed.msgs[parsed.count++];
+            strlcpy(dst.id, id, sizeof(dst.id));
+            strlcpy(dst.agent, agent, sizeof(dst.agent));
+            strlcpy(dst.name, m["w"] | agent, sizeof(dst.name));
+            strlcpy(dst.text, m["t"] | "", sizeof(dst.text));
+            dst.age_minutes = m["a"].as<uint32_t>();
+        }
+        if (parsed.total < parsed.count) parsed.total = parsed.count;
+    }
+    *out = parsed;
     return true;
+}
+
+// Sample agent messages for checking the screen over USB (serial
+// "agentdemo N", N = 0..3). Made-up captions; never sent by a host.
+static void agent_demo(int n) {
+    static const char* const ids[]    = {"demo00000001", "demo00000002", "demo00000003"};
+    static const char* const agents[] = {"champion", "skeptic", "sales-marketing"};
+    static const char* const names[]  = {"Tori", "Sloane", "Mila"};
+    static const char* const texts[]  = {"Proud of today's pitch", "Check the Q4 margin math",
+                                         "Silver Air pricing note"};
+    static const uint32_t ages[] = {2, 9, 14};
+    AgentMessagesData demo = {};
+    if (n < 0) n = 0;
+    if (n > AGENT_MSG_MAX) n = AGENT_MSG_MAX;
+    for (int i = 0; i < n; ++i) {
+        AgentMessage& m = demo.msgs[demo.count++];
+        strlcpy(m.id, ids[i], sizeof(m.id));
+        strlcpy(m.agent, agents[i], sizeof(m.agent));
+        strlcpy(m.name, names[i], sizeof(m.name));
+        strlcpy(m.text, texts[i], sizeof(m.text));
+        m.age_minutes = ages[i];
+    }
+    demo.total = demo.count;
+    agent_messages = demo;
+    if (ui_update_agents(&agent_messages)) idle_note_activity();
+    Serial.printf("agentdemo: %d sample message(s)\n", n);
 }
 
 // ---- Serial command buffer ----
@@ -254,6 +287,7 @@ static void check_serial_cmd() {
             if (audio_test_command(cmd_buf)) { /* handled, including busy guard */ }
             else if (strcmp(cmd_buf, "screenshot") == 0) send_screenshot();
             else if (strcmp(cmd_buf, "buzz") == 0)  sound_hal_play_reset();
+            else if (strncmp(cmd_buf, "agentdemo", 9) == 0) agent_demo(atoi(cmd_buf + 9));
             cmd_pos = 0;
         } else if (cmd_pos < CMD_BUF_SIZE - 1) {
             cmd_buf[cmd_pos++] = c;
@@ -426,7 +460,7 @@ void loop() {
 
         if (power_hal_pwr_pressed()) {
             if (!idle_consume_wake_press()) {
-                // On splash: cycle animations. On the usage view: cycle
+                // On splash: cycle animations. Elsewhere: cycle
                 // screen brightness (single non-splash view, no more screens).
                 if (ui_get_current_screen() == SCREEN_SPLASH) splash_next();
                 else                                          brightness_cycle();
@@ -462,11 +496,14 @@ void loop() {
     if (ble_has_data()) {
         const char* incoming = ble_get_data();
         bool music_message = false;
-        bool pluribus_message = false;
-        if (!parse_pluribus_json(incoming, &pluribus_activity, &pluribus_message)) {
+        bool agents_message = false;
+        bool legacy_message = false;
+        if (!parse_agent_messages_json(incoming, &agent_messages, &agents_message,
+                                       &legacy_message)) {
             ble_send_nack();
-        } else if (pluribus_message) {
-            ui_update_pluribus(&pluribus_activity);
+        } else if (agents_message) {
+            // A new message wakes the panel; the UI takes over the screen.
+            if (!legacy_message && ui_update_agents(&agent_messages)) idle_note_activity();
             ble_send_ack();
         } else if (!parse_now_playing_json(incoming, &now_playing, &music_message)) {
             ble_send_nack();
