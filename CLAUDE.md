@@ -31,13 +31,21 @@ conflict. Known-good baseline: commit `e047ee4` on 2026-09-08.
   complete and verified. Keep the Mac-mini BLE LaunchAgent unloaded while this
   arrangement is active; only the relay LaunchAgent belongs on the Mac mini.
 - The display rotates every 30 seconds among the Clawd animation, Claude usage,
-  Codex usage, Apple Music Now Playing while music is playing, and the latest
-  display-safe Pluribus activity while one is present. Touch advances early and
-  restarts the 30-second timer.
+  Codex usage, and Apple Music Now Playing while music is playing. Touch advances
+  early and restarts the 30-second timer.
+- Agent messages (2026-10-10) replaced the old Pluribus activity screen. When a
+  Pluribus agent has a message Chris has not dismissed in the app, the agent
+  screen interrupts the rotation and holds until tapped: one agent shows its face
+  with a 3-second "hey" loop (Tori has wink/talk frames), several take 3-second
+  turns above a row of small faces and a count. A tap clears them on the device
+  only (RAM; a reboot shows still-waiting ones again). Faces are baked into flash
+  by `tools/gen_agent_faces.py` (`BOARD_HAS_AGENT_FACES`, 2.16 envs only); other
+  boards and unknown agents get an initial on a disc. Serial `agentdemo N`
+  (N = 0..3) shows sample messages for screenshots. No audio this round.
 - Claude usage comes from Claude Code credentials; Codex usage is read passively
   from local Codex session logs; Apple Music metadata/artwork comes from the Mac
-  currently playing the music; Pluribus activity comes from the local Pluribus
-  server. Never include transcript text in the display payload.
+  currently playing the music; agent messages come from the local Pluribus
+  Team feed (`/api/agents/feed`, `daemon/agent_messages.py`, `am` frame). Never include transcript text in the display payload.
 - This unit has an AXP2101 but no physical battery installed. Its `-1` reading
   must make `ui_update_battery()` hide the icon via `battery_present`; do not
   turn that sentinel into an alarming empty-battery glyph. Boards with no
@@ -103,7 +111,7 @@ claude auth status
 
 Expected healthy daemon startup includes `Connected`,
 `macOS: polling without optional refresh subscription`, a compact usage payload,
-optional `np` and `pb` payloads, and no repeated `Device disconnected`. An empty
+optional `np` and `am` payloads, and no repeated `Device disconnected`. An empty
 Claude view with `API HTTP 401` in the log is an expired/logged-out Claude CLI
 credential, not a BLE failure. Verify `claude auth status` or let Claude Code renew
 its token before touching pairing.
@@ -285,7 +293,9 @@ Implementation details and invariants:
    adapters, and publishes a versioned envelope with observation timestamps. It
    binds to the explicit Tailscale IPv4 chosen by `install-relay-macmini.sh`, not
    `0.0.0.0`, and requires a random bearer token stored outside Git with mode 600.
-2. The feed carries only the existing sub-512-byte usage and `pb` display payloads.
+2. The feed carries only the existing sub-512-byte usage and agent-message (`am`)
+   display payloads; the `pluribus` slot is passed through unchanged, so a
+   work-Mac receiver needs no update when that payload changes.
    It never carries credentials, raw Codex sessions, transcripts, or Apple Music.
 3. `daemon/relay_source.py` runs inside the normal daemon on the work Mac. It uses
    bounded requests, rejects invalid/oversized data, rejects envelopes or usage
@@ -396,7 +406,7 @@ firmware/src/
     sim/                    — native desktop simulator: SDL2 + Arduino shims + scenario playback
     template/               — copy this to bootstrap a new port
   main.cpp                  — setup() + loop(): HAL calls only, zero #ifdef BOARD_*
-  ui.{h,cpp}                — splash, Claude usage, Codex, Bluetooth, Now Playing, and Pluribus screens; compute_layout() picks fonts/positions from board_caps()
+  ui.{h,cpp}                — splash, Claude usage, Codex, Bluetooth, Now Playing, and agent-message screens; compute_layout() picks fonts/positions from board_caps()
   splash.{h,cpp}            — 20×20 pixel-art engine. CELL = min(W,H)/20, centered.
   ble.{h,cpp}               — NimBLE peripheral: custom data service + HID keyboard
   data.h                    — UsageData struct

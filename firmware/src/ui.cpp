@@ -892,7 +892,6 @@ static lv_obj_t* make_disc(lv_obj_t* parent, int size, uint32_t bg, lv_opa_t bg_
     lv_obj_set_style_border_color(o, lv_color_hex(border), 0);
     lv_obj_set_style_border_width(o, border_w, 0);
     lv_obj_set_style_pad_all(o, 0, 0);
-    lv_obj_set_style_clip_corner(o, true, 0);
     lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(o, LV_OBJ_FLAG_EVENT_BUBBLE);
@@ -956,19 +955,21 @@ static void init_agents_screen(lv_obj_t* scr) {
     make_accent_rule(agents_container, 76, 58, lv_color_hex(0x8d5de2));
     make_accent_rule(agents_container, 120, 58, lv_color_hex(0x41b1e8));
 
-    agents_ring = make_disc(agents_container, AGENTS_FACE + 16, 0, LV_OPA_TRANSP, 0x5cc3d1, 3);
-    lv_obj_set_style_border_opa(agents_ring, 140, 0);
-    lv_obj_set_pos(agents_ring, face_x - 8, AGENTS_FACE_Y - 8);
-
     agents_disc = make_disc(agents_container, AGENTS_FACE, 0x3a3833, LV_OPA_COVER, 0, 0);
     lv_obj_set_pos(agents_disc, face_x, AGENTS_FACE_Y);
     lbl_agents_initial = make_agents_label(agents_disc, &font_tiempos_56, 0xf3efe6);
+    lv_label_set_text(lbl_agents_initial, "");
     lv_obj_center(lbl_agents_initial);
 
     agents_face = lv_image_create(agents_container);
     lv_obj_set_size(agents_face, AGENTS_FACE, AGENTS_FACE);
     lv_obj_set_pos(agents_face, face_x, AGENTS_FACE_Y);
     lv_obj_add_flag(agents_face, LV_OBJ_FLAG_EVENT_BUBBLE);
+
+    // Above the face: the square art's black corners would hide its diagonals.
+    agents_ring = make_disc(agents_container, AGENTS_FACE + 16, 0, LV_OPA_TRANSP, 0x5cc3d1, 3);
+    lv_obj_set_style_border_opa(agents_ring, 140, 0);
+    lv_obj_set_pos(agents_ring, face_x - 8, AGENTS_FACE_Y - 8);
 
     lbl_agents_hey = make_agents_label(agents_container, &font_tiempos_34, 0x111111);
     lv_label_set_text(lbl_agents_hey, "hey!");
@@ -1002,15 +1003,16 @@ static void init_agents_screen(lv_obj_t* scr) {
 
     for (int i = 0; i < AGENT_MSG_MAX; ++i) {
         const int x = 32 + i * 62, y = 400;
-        agents_mini_rings[i] = make_disc(agents_container, 62, 0, LV_OPA_TRANSP, 0xf3efe6, 3);
-        lv_obj_set_pos(agents_mini_rings[i], x - 5, y - 5);
         agents_minis[i] = make_disc(agents_container, 52, 0x3a3833, LV_OPA_COVER, 0, 0);
         lv_obj_set_pos(agents_minis[i], x, y);
         agents_mini_initials[i] = make_agents_label(agents_minis[i], &font_styrene_24, 0xf3efe6);
+        lv_label_set_text(agents_mini_initials[i], "");
         lv_obj_center(agents_mini_initials[i]);
         agents_mini_imgs[i] = lv_image_create(agents_minis[i]);
         lv_obj_set_pos(agents_mini_imgs[i], 0, 0);
         lv_obj_add_flag(agents_mini_imgs[i], LV_OBJ_FLAG_EVENT_BUBBLE);
+        agents_mini_rings[i] = make_disc(agents_container, 62, 0, LV_OPA_TRANSP, 0xf3efe6, 3);
+        lv_obj_set_pos(agents_mini_rings[i], x - 5, y - 5);
     }
 
     // "3 WAITING" at the right end of the face row.
@@ -1317,10 +1319,15 @@ static uint32_t agent_age_now(const AgentMessage& m) {
     return m.age_minutes + elapsed;
 }
 
-static void set_initial(lv_obj_t* label, const char* name) {
+// Initial letter for agents without face art. The label spans its disc's
+// full width with centered text, so no re-layout is needed when it changes.
+static void set_initial(lv_obj_t* label, const char* name, uint32_t tint, int16_t width) {
     char initial[2] = {name[0] ? (char)toupper((unsigned char)name[0]) : '?', 0};
+    lv_obj_set_width(label, width);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(tint), 0);
     lv_label_set_text(label, initial);
-    lv_obj_center(label);
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
 }
 
 // Recompute which messages are still waiting (not tapped away, under 24 h).
@@ -1357,12 +1364,14 @@ static void agents_refresh_visible(void) {
         if (art >= 0) {
             lv_image_set_src(agents_mini_imgs[s], &agents_mini_dscs[art]);
             lv_obj_clear_flag(agents_mini_imgs[s], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(agents_mini_initials[s], LV_OBJ_FLAG_HIDDEN);
         } else
 #endif
         {
             (void)art;
             lv_obj_add_flag(agents_mini_imgs[s], LV_OBJ_FLAG_HIDDEN);
-            set_initial(agents_mini_initials[s], m.name);
+            set_initial(agents_mini_initials[s], m.name, agent_tint(m.agent), 52);
+            lv_obj_clear_flag(agents_mini_initials[s], LV_OBJ_FLAG_HIDDEN);
         }
     }
     if (multi) lv_obj_clear_flag(agents_count, LV_OBJ_FLAG_HIDDEN);
@@ -1394,9 +1403,7 @@ static void agents_render(int slot) {
         const int16_t d = multi ? 200 : AGENTS_FACE;
         lv_obj_set_size(agents_disc, d, d);
         lv_obj_set_pos(agents_disc, (L.scr_w - d) / 2, AGENTS_FACE_Y + (AGENTS_FACE - d) / 2);
-        lv_obj_set_style_bg_color(agents_disc, lv_color_hex(tint), 0);
-        lv_obj_set_style_bg_opa(agents_disc, 90, 0);
-        set_initial(lbl_agents_initial, m.name);
+        set_initial(lbl_agents_initial, m.name, tint, d);
         lv_obj_clear_flag(agents_disc, LV_OBJ_FLAG_HIDDEN);
     }
     const int16_t ring = multi ? 216 : AGENTS_FACE + 16;

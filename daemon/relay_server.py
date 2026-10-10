@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Tailnet-only Phase 2 collector for the Mac mini.
 
-This process polls the same local Claude, Codex, and Pluribus sources as the BLE
+This process polls the same local Claude, Codex, and Pluribus agent-message
+sources as the BLE
 daemon, stores only compact display payloads, and serves them to the work Mac via
 an authenticated HTTP endpoint.  It never handles Apple Music and never connects
 to the Clawdmeter over BLE.
@@ -24,10 +25,10 @@ from pathlib import Path
 
 try:
     from daemon import claude_usage_daemon as usage_source
-    from daemon import pluribus_activity as pluribus_source
+    from daemon import agent_messages as pluribus_source
 except ImportError:
     import claude_usage_daemon as usage_source
-    import pluribus_activity as pluribus_source
+    import agent_messages as pluribus_source
 
 
 DEFAULT_CONFIG = Path.home() / ".config" / "claude-usage-monitor" / "relay-server.json"
@@ -164,10 +165,10 @@ async def collect(store: StateStore, stop_event: asyncio.Event) -> None:
         if now >= next_pluribus:
             next_pluribus = now + PLURIBUS_INTERVAL
             try:
-                result = await asyncio.to_thread(pluribus_source.fetch_latest)
+                result = await asyncio.to_thread(pluribus_source.fetch_waiting)
                 if result.available and result.payload is not None:
                     store.update_pluribus(result.payload)
-                    log("Updated Pluribus state")
+                    log("Updated agent messages")
             except Exception as exc:
                 log(f"Pluribus collection failed: {type(exc).__name__}")
 

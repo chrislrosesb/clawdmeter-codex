@@ -1,0 +1,5 @@
+# Agent-messages sim scenario (sample data). SIM_SCENARIO=sim/agent-messages.jsonl
+{"name":"usage","hold_ms":800,"s":42.0,"sr":180,"w":33.0,"wr":7900,"st":"allowed","ok":true}
+{"name":"agent without art","hold_ms":3000,"am":{"n":1,"m":[{"i":"sim000000001","g":"therapist","w":"Naomi","t":"Worth a word about Sunday","a":1}]}}
+{"name":"two agents","hold_ms":3000,"am":{"n":2,"m":[{"i":"sim000000001","g":"therapist","w":"Naomi","t":"Worth a word about Sunday","a":1},{"i":"sim000000002","g":"darwin","w":"Darwin","t":"Found a great coffee spot near...","a":6}]}}
+{"name":"cleared in app","hold_ms":3000,"am":{"n":0,"m":[]}}

@@ -112,7 +112,7 @@ Do this once, in this order. Do not erase or reflash the ESP32.
    is connected. The keyboard flow is normal: the device exposes HID for its
    physical shortcut buttons as well as GATT for the display.
 6. The work-Mac daemon should connect on its next retry and send the remote usage
-   and Pluribus screens. Play a track in Music.app to verify local metadata and
+   and agent-message screens. Play a track in Music.app to verify local metadata and
    artwork.
 
 Only one Mac may own the device. Never restart the Mac-mini Bluetooth writer
@@ -131,14 +131,14 @@ tail -F ~/Library/Logs/claude-usage-daemon.err.log
 Verify the screens independently before waiting for a full 30-second rotation:
 
 1. Claude and Codex values match the Mac mini.
-2. A recent Pluribus activity appears and ages normally.
+2. A waiting Pluribus agent message takes over the screen; a tap clears it.
 3. Music.app playback adds Now Playing with artwork from the work Mac.
 4. Pausing/stopping Music removes that screen while the other screens remain.
 
 If Tailscale or the relay is temporarily unavailable, the receiver leaves the
 last valid usage on the display instead of replacing it with false zeroes. It
 rejects a relay envelope older than three minutes and independently rejects old
-source slots. Pluribus activity still expires under its existing 24-hour rule.
+source slots. Agent messages still expire after 24 hours.
 
 ## Updating either Mac
 

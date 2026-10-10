@@ -264,14 +264,16 @@ screen only after the complete frame validates. Firmware also accepts the origin
 RGB565 frames as a fallback. This retains the existing GATT schema and Bluetooth bond
 while reducing a typical cover transfer from 180 KB to roughly 10–30 KB.
 
-Pluribus activity uses a separate compact `{"pb":...}` payload. The daemon
-polls the authenticated local `http://127.0.0.1:8077/api/activity/latest`
+Pluribus agent messages use a separate compact `{"am":...}` payload. The daemon
+polls the authenticated local `http://127.0.0.1:8077/api/agents/feed?days=1`
 endpoint every 15 seconds, resolving `PLURIBUS_CONFIG`, `PLURIBUS_LIBRARY`, and
-the existing Pluribus auth token just as the server does. An unavailable or
-malformed server response sends nothing and cannot disturb Claude, Codex, or
-Music. A successful `{"activity":null}` response clears the screen; otherwise
-the latest event ages locally and leaves the carousel after 24 hours. Only the
-display-safe title/detail supplied by Pluribus are sent—never transcript text.
+the existing Pluribus auth token just as the server does. It sends the newest
+message per agent (up to three) with a one-line caption, plus the total waiting
+count. An unavailable or malformed response sends nothing and cannot disturb
+Claude, Codex, or Music. While anything is waiting, the agent screen interrupts
+the rotation; a tap clears it on the device only, and messages age out after 24
+hours. Full message text never leaves the Mac. The firmware still acknowledges
+the retired `{"pb":...}` frame and ignores it.
 
 ## Development
 

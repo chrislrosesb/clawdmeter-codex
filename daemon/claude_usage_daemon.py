@@ -29,10 +29,12 @@ from bleak.exc import BleakError
 try:
     from daemon import codex_source  # package context (tests)
     from daemon import pluribus_activity as pluribus_source
+    from daemon import agent_messages
     from daemon import relay_source
 except ImportError:
     import codex_source  # script context (launchd/systemd run the file directly)
     import pluribus_activity as pluribus_source
+    import agent_messages
     import relay_source
 
 if sys.platform == "darwin":
@@ -698,13 +700,17 @@ async def poll_display_usage() -> tuple[dict | None, bool]:
 
 
 def fetch_display_pluribus() -> pluribus_source.PollResult:
-    """Return local Pluribus activity or the Mac mini's relayed activity."""
+    """Return local waiting agent messages or the Mac mini's relayed ones.
+
+    The relay's "pluribus" slot is a pass-through display payload, so an older
+    work-Mac receiver forwards the new ``am`` frame unchanged.
+    """
     if relay_source.is_configured():
         state = relay_source.fetch_state()
         if not state.available or state.pluribus is None:
             return pluribus_source.PollResult(False)
         return pluribus_source.PollResult(True, state.pluribus)
-    return pluribus_source.fetch_latest()
+    return agent_messages.fetch_waiting()
 
 
 class Session:
