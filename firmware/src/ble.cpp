@@ -82,6 +82,8 @@ static volatile uint16_t param_fix_handle = CONN_HANDLE_NONE;  // pending retry
 static volatile uint32_t param_fix_at_ms  = 0;                 // when to send it
 static volatile uint16_t param_fix_spent  = CONN_HANDLE_NONE;  // one per connection
 static char rx_buf[BLE_BUF_SIZE];
+static volatile uint32_t usb_last_ms = 0;          // last USB packet/handshake
+static const uint32_t USB_ACTIVE_MS = 150000;      // > 2 daemon usage polls
 static volatile bool data_ready = false;
 static volatile bool has_received_data = false;
 static char mac_str[18];
@@ -405,6 +407,7 @@ class RxCallbacks : public NimBLECharacteristicCallbacks {
             Serial.printf("BLE: dropping RX write from non-owner %s\n", id.c_str());
             return;
         }
+        if (ble_usb_active()) return;   // the Mac on the USB cable owns the display
         std::string val = chr->getValue();
         if (val.length() >= 2 && (uint8_t)val[0] == ART_MAGIC) {
             receive_artwork_packet((const uint8_t*)val.data(), val.length());
@@ -575,6 +578,29 @@ void ble_send_nack(void) {
         tx_char->setValue("{\"err\":true}");
         tx_char->notify();
     }
+}
+
+void ble_usb_note_alive(void) {
+    usb_last_ms = millis() | 1;   // never 0, which means "never"
+}
+
+bool ble_usb_active(void) {
+    return usb_last_ms != 0 && millis() - usb_last_ms < USB_ACTIVE_MS;
+}
+
+bool ble_usb_packet(const uint8_t* data, size_t len) {
+    if (!data || len == 0) return false;
+    ble_usb_note_alive();
+    if (len >= 2 && data[0] == ART_MAGIC) {
+        receive_artwork_packet(data, len);
+        return true;
+    }
+    if (len >= BLE_BUF_SIZE || data_ready) return false;   // one JSON per loop
+    memcpy(rx_buf, data, len);
+    rx_buf[len] = '\0';
+    data_ready = true;
+    has_received_data = true;
+    return true;
 }
 
 bool ble_take_artwork(BleArtwork* out) {

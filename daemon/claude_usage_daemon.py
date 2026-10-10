@@ -31,11 +31,19 @@ try:
     from daemon import pluribus_activity as pluribus_source
     from daemon import agent_messages
     from daemon import relay_source
+    try:
+        from daemon import usb_link
+    except ImportError:  # termios is POSIX-only
+        usb_link = None
 except ImportError:
     import codex_source  # script context (launchd/systemd run the file directly)
     import pluribus_activity as pluribus_source
     import agent_messages
     import relay_source
+    try:
+        import usb_link
+    except ImportError:  # termios is POSIX-only
+        usb_link = None
 
 if sys.platform == "darwin":
     try:
@@ -58,6 +66,7 @@ TICK = 5
 CONNECT_TIMEOUT = 20.0
 MUSIC_POLL_INTERVAL = 5.0
 PLURIBUS_POLL_INTERVAL = 15.0
+USB_CHECK_INTERVAL = 30.0   # how often a Bluetooth session looks for a USB cable
 ART_MAGIC = 0xA5
 ART_START = 0x01
 ART_CHUNK = 0x02
@@ -879,6 +888,149 @@ def unpair_macos() -> bool:
     return True
 
 
+async def run_session(session, stop_event: asyncio.Event, is_connected,
+                      usb_preempts: bool = False) -> bool:
+    """Poll every source and write to the device until the link drops.
+
+    ``session`` is a BLE ``Session`` or a ``usb_link.UsbSession`` (same write
+    API). A Bluetooth session ends early when the device turns up on a USB
+    cable, so the main loop can switch to the faster wired link.
+    """
+    last_poll = 0.0
+    next_music_poll = 0.0
+    next_pluribus_poll = 0.0
+    last_music_id: str | None = None
+    music_was_playing = False
+    last_pluribus_payload: object = object()
+    used_successfully = False
+    next_usb_check = time.time() + USB_CHECK_INTERVAL
+    while is_connected() and not stop_event.is_set():
+        now = time.time()
+        elapsed = now - last_poll
+        if session.refresh_requested.is_set() or elapsed >= POLL_INTERVAL:
+            session.refresh_requested.clear()
+            # Pure free-ride: read whatever access token(s) Claude Code
+            # currently holds across the configured config dirs and NEVER
+            # refresh them ourselves. Claude Code (the token's owner) does all
+            # refreshing; refreshing here would race its rotation and feed the
+            # OAuth endpoint's rate limit (429). When no dir has a usable token
+            # we signal "No data" so the device idles instead of holding stale
+            # numbers until the CLI re-seeds it.
+            payload, dead = await poll_display_usage()
+            if payload is not None:
+                if await session.write_payload(payload):
+                    last_poll = time.time()
+                    used_successfully = True
+            elif dead:
+                # No live token in any config dir (missing, or a 401/expired
+                # token) -> show "No data" now instead of stale numbers. Guard
+                # last_poll on the write result (like the data path) so a
+                # failed beat retries next tick instead of throttling what may
+                # be a healthy link for a full POLL_INTERVAL.
+                log("No usable token; signalling no-data to device — run "
+                    "`claude login` or use the CLI to let Claude Code renew it")
+                if await session.write_payload({"ok": False}):
+                    last_poll = time.time()
+            else:
+                # Transient poll failure (a live token that didn't answer this
+                # cycle) -> stay silent and retry next tick.
+                log("No usable usage source this cycle")
+                if relay_source.is_configured():
+                    # Avoid hammering the tailnet endpoint once per loop while
+                    # still recovering substantially faster than a full poll.
+                    last_poll = time.time() - (POLL_INTERVAL - 15)
+
+        # Apple Music is intentionally independent of Claude polling. A
+        # source/permission/artwork failure can only suppress this optional
+        # screen; it never changes the usage payload or its timestamps.
+        music_enabled = (
+            now_playing_source is not None and
+            read_now_playing_setting() == "on"
+        )
+        if music_enabled and now >= next_music_poll:
+            next_music_poll = now + MUSIC_POLL_INTERVAL
+            try:
+                track = await asyncio.to_thread(now_playing_source.query)
+            except Exception as e:
+                log(f"Now Playing source failed: {e}")
+                next_music_poll = now + 60.0
+                track = None
+
+            if track is None:
+                if music_was_playing:
+                    await session.write_payload({"np": {"p": 0}})
+                music_was_playing = False
+                last_music_id = None
+            else:
+                metadata_ok = await session.write_payload(track.wire_payload())
+                if metadata_ok:
+                    used_successfully = True
+                music_was_playing = True
+                if track.track_id != last_music_id:
+                    last_music_id = track.track_id
+                    try:
+                        frame = await asyncio.to_thread(now_playing_source.artwork, track)
+                    except Exception as e:
+                        log(f"Artwork preparation failed: {e}")
+                        frame = None
+                    if frame:
+                        generation = int(track.track_id[:4], 16)
+                        await session.write_artwork(frame, generation)
+                        # Refresh the timestamp/progress after a potentially
+                        # multi-second transfer, whether or not it succeeded.
+                        fresh_track = await asyncio.to_thread(now_playing_source.query)
+                        if fresh_track and fresh_track.track_id == track.track_id:
+                            await session.write_payload(fresh_track.wire_payload())
+        elif not music_enabled and music_was_playing:
+            await session.write_payload({"np": {"p": 0}})
+            music_was_playing = False
+            last_music_id = None
+
+        # Pluribus is another independent local source. Its authenticated
+        # HTTP request runs off the asyncio event loop, and an unavailable
+        # or malformed response intentionally emits no BLE update so the
+        # firmware can retain and locally age its last valid activity.
+        if now >= next_pluribus_poll:
+            next_pluribus_poll = now + PLURIBUS_POLL_INTERVAL
+            try:
+                result = await asyncio.to_thread(fetch_display_pluribus)
+            except Exception as e:
+                # Never include resolved config or the bearer token here.
+                log(f"Pluribus activity source failed: {type(e).__name__}")
+                result = pluribus_source.PollResult(False)
+            if result.available and result.payload != last_pluribus_payload:
+                if await session.write_payload(result.payload):
+                    last_pluribus_payload = result.payload
+                    used_successfully = True
+
+        try:
+            await asyncio.wait_for(session.refresh_requested.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+        if usb_link is not None and isinstance(session, usb_link.UsbSession):
+            await session.keepalive()
+        elif usb_link is not None and usb_preempts and time.time() >= next_usb_check:
+            next_usb_check = time.time() + USB_CHECK_INTERVAL
+            if usb_link.device_present():
+                port = await asyncio.to_thread(usb_link.find_device)
+                if port is not None:
+                    port.close()
+                    log("Device found on USB; switching from Bluetooth")
+                    break
+    return used_successfully
+
+
+async def run_usb(port, stop_event: asyncio.Event) -> bool:
+    """Drive the display over the USB cable until it is unplugged."""
+    log(f"Connected over USB ({port.path})")
+    session = usb_link.UsbSession(port)
+    try:
+        return await run_session(session, stop_event, lambda: session.is_connected)
+    finally:
+        await session.disconnect()
+        log("USB link closed" if not stop_event.is_set() else "Stopping")
+
+
 async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
     """Connect to a target and poll until disconnected or stopped.
 
@@ -925,117 +1077,9 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
     else:
         log("macOS: polling without optional refresh subscription")
 
-    last_poll = 0.0
-    next_music_poll = 0.0
-    next_pluribus_poll = 0.0
-    last_music_id: str | None = None
-    music_was_playing = False
-    last_pluribus_payload: object = object()
-    used_successfully = False
     try:
-        while client.is_connected and not stop_event.is_set():
-            now = time.time()
-            elapsed = now - last_poll
-            if session.refresh_requested.is_set() or elapsed >= POLL_INTERVAL:
-                session.refresh_requested.clear()
-                # Pure free-ride: read whatever access token(s) Claude Code
-                # currently holds across the configured config dirs and NEVER
-                # refresh them ourselves. Claude Code (the token's owner) does all
-                # refreshing; refreshing here would race its rotation and feed the
-                # OAuth endpoint's rate limit (429). When no dir has a usable token
-                # we signal "No data" so the device idles instead of holding stale
-                # numbers until the CLI re-seeds it.
-                payload, dead = await poll_display_usage()
-                if payload is not None:
-                    if await session.write_payload(payload):
-                        last_poll = time.time()
-                        used_successfully = True
-                elif dead:
-                    # No live token in any config dir (missing, or a 401/expired
-                    # token) -> show "No data" now instead of stale numbers. Guard
-                    # last_poll on the write result (like the data path) so a
-                    # failed beat retries next tick instead of throttling what may
-                    # be a healthy link for a full POLL_INTERVAL.
-                    log("No usable token; signalling no-data to device — run "
-                        "`claude login` or use the CLI to let Claude Code renew it")
-                    if await session.write_payload({"ok": False}):
-                        last_poll = time.time()
-                else:
-                    # Transient poll failure (a live token that didn't answer this
-                    # cycle) -> stay silent and retry next tick.
-                    log("No usable usage source this cycle")
-                    if relay_source.is_configured():
-                        # Avoid hammering the tailnet endpoint once per loop while
-                        # still recovering substantially faster than a full poll.
-                        last_poll = time.time() - (POLL_INTERVAL - 15)
-
-            # Apple Music is intentionally independent of Claude polling. A
-            # source/permission/artwork failure can only suppress this optional
-            # screen; it never changes the usage payload or its timestamps.
-            music_enabled = (
-                now_playing_source is not None and
-                read_now_playing_setting() == "on"
-            )
-            if music_enabled and now >= next_music_poll:
-                next_music_poll = now + MUSIC_POLL_INTERVAL
-                try:
-                    track = await asyncio.to_thread(now_playing_source.query)
-                except Exception as e:
-                    log(f"Now Playing source failed: {e}")
-                    next_music_poll = now + 60.0
-                    track = None
-
-                if track is None:
-                    if music_was_playing:
-                        await session.write_payload({"np": {"p": 0}})
-                    music_was_playing = False
-                    last_music_id = None
-                else:
-                    metadata_ok = await session.write_payload(track.wire_payload())
-                    if metadata_ok:
-                        used_successfully = True
-                    music_was_playing = True
-                    if track.track_id != last_music_id:
-                        last_music_id = track.track_id
-                        try:
-                            frame = await asyncio.to_thread(now_playing_source.artwork, track)
-                        except Exception as e:
-                            log(f"Artwork preparation failed: {e}")
-                            frame = None
-                        if frame:
-                            generation = int(track.track_id[:4], 16)
-                            await session.write_artwork(frame, generation)
-                            # Refresh the timestamp/progress after a potentially
-                            # multi-second transfer, whether or not it succeeded.
-                            fresh_track = await asyncio.to_thread(now_playing_source.query)
-                            if fresh_track and fresh_track.track_id == track.track_id:
-                                await session.write_payload(fresh_track.wire_payload())
-            elif not music_enabled and music_was_playing:
-                await session.write_payload({"np": {"p": 0}})
-                music_was_playing = False
-                last_music_id = None
-
-            # Pluribus is another independent local source. Its authenticated
-            # HTTP request runs off the asyncio event loop, and an unavailable
-            # or malformed response intentionally emits no BLE update so the
-            # firmware can retain and locally age its last valid activity.
-            if now >= next_pluribus_poll:
-                next_pluribus_poll = now + PLURIBUS_POLL_INTERVAL
-                try:
-                    result = await asyncio.to_thread(fetch_display_pluribus)
-                except Exception as e:
-                    # Never include resolved config or the bearer token here.
-                    log(f"Pluribus activity source failed: {type(e).__name__}")
-                    result = pluribus_source.PollResult(False)
-                if result.available and result.payload != last_pluribus_payload:
-                    if await session.write_payload(result.payload):
-                        last_pluribus_payload = result.payload
-                        used_successfully = True
-
-            try:
-                await asyncio.wait_for(session.refresh_requested.wait(), timeout=1.0)
-            except asyncio.TimeoutError:
-                pass
+        used_successfully = await run_session(
+            session, stop_event, lambda: client.is_connected, usb_preempts=True)
     finally:
         try:
             await client.disconnect()
@@ -1070,6 +1114,12 @@ async def main() -> None:
     backoff = 1
     skip_addr: str | None = None  # macOS: a peripheral to skip for one cycle
     while not stop_event.is_set():
+        # A Mac on the USB cable wins: faster, no pairing. Bluetooth otherwise.
+        if usb_link is not None and usb_link.device_present():
+            port = await asyncio.to_thread(usb_link.find_device)
+            if port is not None:
+                await run_usb(port, stop_event)
+                continue
         # Apply any pending skip exactly once, then clear it so the next
         # cycle re-tries retrieveConnected (the device may have recovered).
         target = await discover_target(skip_addr=skip_addr)

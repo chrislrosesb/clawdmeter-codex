@@ -230,11 +230,34 @@ static void agent_demo(int n) {
     Serial.printf("agentdemo: %d sample message(s)\n", n);
 }
 
-// ---- Serial command buffer ----
-#define CMD_BUF_SIZE 64
-static char cmd_buf[CMD_BUF_SIZE];
-static int cmd_pos = 0;
-static bool cmd_overflow = false;
+// ---- Serial lines: commands and the USB data link ----
+// Lines starting with '{' are display JSON and '@' lines are hex-encoded
+// binary packets (artwork), both answered "#ok"/"#err" so the Mac can pace
+// itself. "clawdmeter?" is the Mac's handshake/keepalive. Anything else is a
+// debug command. Sized for a 1 KB artwork chunk in hex plus its header.
+#define LINE_BUF_SIZE 2304
+static char line_buf[LINE_BUF_SIZE];
+static int line_pos = 0;
+static bool line_overflow = false;
+
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// Decode "@<hex>" in place; returns the byte count, or -1 if malformed.
+static int decode_hex_line(char* line, int len) {
+    if (len < 3 || (len - 1) % 2) return -1;
+    uint8_t* out = (uint8_t*)line;
+    for (int i = 1, o = 0; i < len; i += 2, ++o) {
+        int hi = hex_nibble(line[i]), lo = hex_nibble(line[i + 1]);
+        if (hi < 0 || lo < 0) return -1;
+        out[o] = (uint8_t)(hi << 4 | lo);
+    }
+    return (len - 1) / 2;
+}
 
 static void send_screenshot() {
 #ifndef BOARD_HAS_PSRAM
@@ -277,23 +300,35 @@ static void send_screenshot() {
 static void check_serial_cmd() {
     while (Serial.available()) {
         char c = Serial.read();
-        if (c == '\n' || c == '\r') {
-            if (cmd_overflow) {
-                cmd_pos = 0;
-                cmd_overflow = false;
-                continue;
-            }
-            cmd_buf[cmd_pos] = '\0';
-            if (audio_test_command(cmd_buf)) { /* handled, including busy guard */ }
-            else if (strcmp(cmd_buf, "screenshot") == 0) send_screenshot();
-            else if (strcmp(cmd_buf, "buzz") == 0)  sound_hal_play_reset();
-            else if (strncmp(cmd_buf, "agentdemo", 9) == 0) agent_demo(atoi(cmd_buf + 9));
-            cmd_pos = 0;
-        } else if (cmd_pos < CMD_BUF_SIZE - 1) {
-            cmd_buf[cmd_pos++] = c;
-        } else {
-            cmd_overflow = true;
+        if (c != '\n' && c != '\r') {
+            if (line_pos < LINE_BUF_SIZE - 1) line_buf[line_pos++] = c;
+            else line_overflow = true;
+            continue;
         }
+        if (line_overflow) {
+            if (line_buf[0] == '{' || line_buf[0] == '@') Serial.println("#err");
+            line_pos = 0;
+            line_overflow = false;
+            continue;
+        }
+        if (line_pos == 0) continue;
+        line_buf[line_pos] = '\0';
+        const int len = line_pos;
+        line_pos = 0;
+        if (line_buf[0] == '{') {
+            Serial.println(ble_usb_packet((const uint8_t*)line_buf, len) ? "#ok" : "#err");
+            return;   // let loop() consume this payload before the next one
+        } else if (line_buf[0] == '@') {
+            int n = decode_hex_line(line_buf, len);
+            Serial.println(n > 0 && ble_usb_packet((const uint8_t*)line_buf, n) ? "#ok" : "#err");
+        } else if (strcmp(line_buf, "clawdmeter?") == 0) {
+            ble_usb_note_alive();
+            Serial.println("CLAWDMETER usb1");
+        }
+        else if (audio_test_command(line_buf)) { /* handled, including busy guard */ }
+        else if (strcmp(line_buf, "screenshot") == 0) send_screenshot();
+        else if (strcmp(line_buf, "buzz") == 0)  sound_hal_play_reset();
+        else if (strncmp(line_buf, "agentdemo", 9) == 0) agent_demo(atoi(line_buf + 9));
     }
 }
 
@@ -304,6 +339,7 @@ static void check_serial_cmd() {
 extern "C" void board_init(void);
 
 void setup() {
+    Serial.setRxBufferSize(8192);   // USB data link bursts (artwork chunks)
     Serial.begin(115200);
     audio_test_init();
     delay(300);
@@ -470,7 +506,8 @@ void loop() {
         pair_tick();
     }
 
-    ble_state_t bs = ble_get_state();
+    // A Mac on the USB cable counts as a live link for the UI's pairing hint.
+    ble_state_t bs = ble_usb_active() ? BLE_STATE_CONNECTED : ble_get_state();
     if (bs != last_ble_state) {
         last_ble_state = bs;
         ui_update_ble_status(bs, ble_get_device_name(), ble_get_mac_address());

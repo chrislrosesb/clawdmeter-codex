@@ -14,6 +14,7 @@ void delay(unsigned long ms);
 class SimSerial {
 public:
     void begin(unsigned long baud) { (void)baud; }
+    void setRxBufferSize(size_t n) { (void)n; }
     int  available(void) { return 0; }
     int  read(void) { return -1; }
     size_t write(const uint8_t* buf, size_t len);

@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stddef.h>
 
 enum ble_state_t {
     BLE_STATE_INIT,
@@ -40,6 +41,14 @@ struct BleArtwork {
 bool ble_take_artwork(BleArtwork* out);
 
 void ble_set_battery_level(int pct);
+
+// USB link: a Mac on the cable feeds the same packets the RX characteristic
+// takes (usage/music/agent JSON, artwork frames). While USB has been active
+// recently, BLE data writes are ignored so the cabled Mac is the one owner.
+// Buttons still use BLE HID. Returns false for a packet that was rejected.
+bool ble_usb_packet(const uint8_t* data, size_t len);
+void ble_usb_note_alive(void);
+bool ble_usb_active(void);
 
 // BLE HID keyboard
 void ble_keyboard_press(uint8_t key, uint8_t modifier);
