@@ -4,6 +4,32 @@ Short running notes for the next session. The canonical deployment runbook is
 `CLAUDE.md`; the shared agent-bridge handoff and decision log hold the Phase 1/2
 history.
 
+## 2026-10-10 — Chat and Room replies on the device
+
+**What it does:** every finished agent reply in any shared chat or Room pops up
+on the Clawdmeter, even if Pluribus is open on the Mac behind other windows or
+Chris has switched apps on the iPhone. Replies queue oldest first, 5 s each, with
+the Room name in the header and two lines of the reply. Tap clears everything on
+the device; replies drop off after 3 hours. Agent check-ins still show as before.
+
+**Why it ignores read state:** the Mac app marks a room read whenever its window
+is open, even fully covered (it checks `scenePhase`, not occlusion). Step 2, only
+if the echo while watching a room bothers Chris: make the Mac app count a room
+as read only when its window is truly in front (TestFlight), then let app-read
+clear the device.
+
+**Pieces:** `daemon/chat_replies.py` (reads `/api/ask/sessions` + each recently
+updated session's `_chat_reply_receipts`; no Pluribus change), `fetch_display_rooms`
+and the 5 s `rm` loop in `run_session`, relay `rooms` slot
+(`relay_server.update_rooms`, `relay_source` parses it), firmware `rm` parsing in
+`main.cpp` and `ui_add_room_reply` / the reworked `agents_refresh_visible` in
+`ui.cpp` (12-reply ring, oldest-first sort, distinct-agent face row, 176 px face
+in multi mode). Tests: `daemon/tests/test_chat_replies.py`.
+
+**Verified:** on the real device over USB with today's real replies (Gilfoyle,
+Mila, Tori + Darwin check-in, "5 WAITING"); Room header checked in the sim.
+**Not yet:** a live Room conversation end to end, and the work Mac (needs pull).
+
 ## 2026-10-10 — USB cable link (Bluetooth kept as fallback)
 
 **What it does:** plug the Clawdmeter into a Mac running the daemon and that Mac

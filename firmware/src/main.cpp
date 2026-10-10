@@ -179,6 +179,23 @@ static bool parse_agent_messages_json(const char* json, AgentMessagesData* out,
         *legacy = true;
         return true;
     }
+    JsonVariantConst rm = doc["rm"];
+    if (!rm.isUnbound()) {   // one chat/Room reply, queued by the UI
+        *recognized = true;
+        AgentMessage reply = {};
+        const char* id = rm["i"] | "";
+        const char* agent = rm["g"] | "";
+        if (!id[0] || !agent[0] || !rm["a"].is<uint32_t>()) return false;
+        strlcpy(reply.id, id, sizeof(reply.id));
+        strlcpy(reply.agent, agent, sizeof(reply.agent));
+        strlcpy(reply.name, rm["w"] | agent, sizeof(reply.name));
+        strlcpy(reply.room, rm["r"] | "", sizeof(reply.room));
+        strlcpy(reply.text, rm["t"] | "", sizeof(reply.text));
+        reply.age_minutes = rm["a"].as<uint32_t>();
+        if (ui_add_room_reply(&reply)) idle_note_activity();
+        *legacy = true;   // handled here; leave the check-in snapshot untouched
+        return true;
+    }
     JsonVariantConst am = doc["am"];
     if (am.isUnbound()) return true;
     *recognized = true;

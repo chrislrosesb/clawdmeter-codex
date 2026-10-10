@@ -281,34 +281,41 @@ static lv_obj_t* agents_who = nullptr;
 static lv_obj_t* lbl_agents_name = nullptr;
 static lv_obj_t* lbl_agents_age = nullptr;
 static lv_obj_t* lbl_agents_text = nullptr;
-static lv_obj_t* agents_minis[AGENT_MSG_MAX] = {};
-static lv_obj_t* agents_mini_imgs[AGENT_MSG_MAX] = {};
-static lv_obj_t* agents_mini_initials[AGENT_MSG_MAX] = {};
-static lv_obj_t* agents_mini_rings[AGENT_MSG_MAX] = {};
+#define AGENTS_MINI_MAX 4      // faces in the row (distinct agents)
+#define AGENTS_ROOM_MAX 12     // chat/Room replies kept on the device
+#define AGENTS_ITEM_MAX (AGENT_MSG_MAX + AGENTS_ROOM_MAX)
+static lv_obj_t* agents_minis[AGENTS_MINI_MAX] = {};
+static lv_obj_t* agents_mini_imgs[AGENTS_MINI_MAX] = {};
+static lv_obj_t* agents_mini_initials[AGENTS_MINI_MAX] = {};
+static lv_obj_t* agents_mini_rings[AGENTS_MINI_MAX] = {};
 static lv_obj_t* agents_count = nullptr;
 static lv_obj_t* lbl_agents_count = nullptr;
 static bool agents_screen_supported = false;
 static AgentMessagesData agents_data = {};
-static uint32_t agents_received_ms = 0;
-static int8_t agents_visible[AGENT_MSG_MAX];   // indices into agents_data.msgs
+static AgentMessage agents_rooms[AGENTS_ROOM_MAX] = {};   // ring of chat/Room replies
+static uint8_t agents_rooms_next = 0;
+static const AgentMessage* agents_visible[AGENTS_ITEM_MAX];   // waiting, oldest first
+static const char* agents_mini_agent[AGENTS_MINI_MAX] = {};   // agent id per row slot
 static uint8_t agents_visible_count = 0;
 static uint16_t agents_waiting = 0;            // header/row count
-static int8_t agents_shown = -1;               // msgs index on screen; -1 forces a render
+static char agents_shown[13] = {};             // id on screen; "" forces a render
 static int8_t agents_frame = -1;               // 0 neutral, 1 wink, 2 talk
 static int16_t agents_bob = INT16_MIN;
 static int8_t agents_hey = -1;
 static uint32_t agents_last_age_tick = UINT32_MAX;
-#define AGENTS_ID_RING 24
+#define AGENTS_ID_RING 48
 static char agents_dismissed[AGENTS_ID_RING][13] = {};   // tapped away here
 static uint8_t agents_dismissed_next = 0;
 static char agents_seen[AGENTS_ID_RING][13] = {};        // already announced (wake once)
 static uint8_t agents_seen_next = 0;
-static const uint32_t AGENTS_EXPIRY_MINUTES = 24 * 60;
+static const uint32_t AGENTS_EXPIRY_MINUTES = 24 * 60;     // check-ins
+static const uint32_t AGENTS_ROOM_EXPIRY_MINUTES = 3 * 60;  // chat/Room replies
 static const uint32_t AGENTS_HEY_MS = 3200;
-static const uint32_t AGENTS_TURN_MS = 3000;
+static const uint32_t AGENTS_TURN_MS = 5000;
 static const int16_t AGENTS_FACE = 224;
 static const int16_t AGENTS_FACE_Y = 84;
-static const uint16_t AGENTS_MULTI_SCALE = 228;   // 224 px art shown at 200 px
+static const uint16_t AGENTS_MULTI_SCALE = 201;   // 224 px art shown at 176 px
+static const int16_t AGENTS_MULTI_FACE = 176;
 #ifdef BOARD_HAS_AGENT_FACES
 static lv_image_dsc_t agents_face_dscs[AGENT_FACE_ART_COUNT][3];
 static lv_image_dsc_t agents_mini_dscs[AGENT_FACE_ART_COUNT];
@@ -998,10 +1005,10 @@ static void init_agents_screen(lv_obj_t* scr) {
     lv_obj_set_style_text_letter_space(lbl_agents_age, 1, 0);
 
     lbl_agents_text = make_agents_label(agents_container, &font_styrene_28, 0xf3efe6);
-    lv_obj_set_size(lbl_agents_text, W - 64, 36);
+    lv_obj_set_size(lbl_agents_text, W - 64, 72);   // two lines, then "..."
     lv_label_set_long_mode(lbl_agents_text, LV_LABEL_LONG_DOT);
 
-    for (int i = 0; i < AGENT_MSG_MAX; ++i) {
+    for (int i = 0; i < AGENTS_MINI_MAX; ++i) {
         const int x = 32 + i * 62, y = 400;
         agents_minis[i] = make_disc(agents_container, 52, 0x3a3833, LV_OPA_COVER, 0, 0);
         lv_obj_set_pos(agents_minis[i], x, y);
@@ -1314,7 +1321,7 @@ static void agent_id_add(char ring[][13], uint8_t* next, const char* id) {
 }
 
 static uint32_t agent_age_now(const AgentMessage& m) {
-    uint32_t elapsed = (lv_tick_get() - agents_received_ms) / 60000U;
+    uint32_t elapsed = (lv_tick_get() - m.received_ms) / 60000U;
     if (m.age_minutes > UINT32_MAX - elapsed) return UINT32_MAX;
     return m.age_minutes + elapsed;
 }
@@ -1330,7 +1337,9 @@ static void set_initial(lv_obj_t* label, const char* name, uint32_t tint, int16_
     lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
 }
 
-// Recompute which messages are still waiting (not tapped away, under 24 h).
+// Recompute what is still waiting: check-ins (24 h) plus chat/Room replies
+// (3 h), minus anything tapped away here, oldest first so a conversation
+// reads in order. Rebuilds the face row (distinct agents) and the counts.
 static void agents_refresh_visible(void) {
     uint8_t n = 0;
     bool any_dismissed = false;
@@ -1338,26 +1347,41 @@ static void agents_refresh_visible(void) {
         const AgentMessage& m = agents_data.msgs[i];
         if (agent_id_in(agents_dismissed, m.id)) { any_dismissed = true; continue; }
         if (agent_age_now(m) >= AGENTS_EXPIRY_MINUTES) continue;
-        agents_visible[n++] = i;
+        agents_visible[n++] = &m;
+    }
+    for (int i = 0; i < AGENTS_ROOM_MAX; ++i) {
+        const AgentMessage& m = agents_rooms[i];
+        if (!m.id[0] || agent_id_in(agents_dismissed, m.id)) continue;
+        if (agent_age_now(m) >= AGENTS_ROOM_EXPIRY_MINUTES) continue;
+        agents_visible[n++] = &m;
+    }
+    for (int i = 1; i < n; ++i) {   // insertion sort, oldest first
+        const AgentMessage* m = agents_visible[i];
+        uint32_t age = agent_age_now(*m);
+        int j = i - 1;
+        for (; j >= 0 && agent_age_now(*agents_visible[j]) < age; --j)
+            agents_visible[j + 1] = agents_visible[j];
+        agents_visible[j + 1] = m;
     }
     agents_visible_count = n;
-    // The host's total also counts older messages from the same agents; once
-    // any are cleared here, only what is actually on screen is honest.
-    agents_waiting = any_dismissed || agents_data.total < n ? n : agents_data.total;
-    agents_shown = -1;
+    // The host's check-in total also counts older messages from the same
+    // agents; once any are cleared here, only what is on screen is honest.
+    const uint16_t extra = any_dismissed || agents_data.total < agents_data.count
+        ? 0 : agents_data.total - agents_data.count;
+    agents_waiting = n + extra;
+    agents_shown[0] = '\0';
     if (!agents_screen_supported) return;
 
-    lv_label_set_text_fmt(lbl_agents_header, "PLURIBUS  \xC2\xB7  %u WAITING",
-                          (unsigned)agents_waiting);
     lv_label_set_text_fmt(lbl_agents_count, "%u", (unsigned)agents_waiting);
     const bool multi = n > 1;
-    for (int s = 0; s < AGENT_MSG_MAX; ++s) {
-        if (!multi || s >= n) {
-            lv_obj_add_flag(agents_minis[s], LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(agents_mini_rings[s], LV_OBJ_FLAG_HIDDEN);
-            continue;
-        }
-        const AgentMessage& m = agents_data.msgs[agents_visible[s]];
+    uint8_t slots = 0;
+    for (int v = 0; multi && v < n && slots < AGENTS_MINI_MAX; ++v) {
+        const AgentMessage& m = *agents_visible[v];
+        bool dup = false;
+        for (int s = 0; s < slots; ++s) dup |= strcmp(agents_mini_agent[s], m.agent) == 0;
+        if (dup) continue;
+        const int s = slots++;
+        agents_mini_agent[s] = m.agent;
         lv_obj_clear_flag(agents_minis[s], LV_OBJ_FLAG_HIDDEN);
         int art = agent_art_index(m.agent);
 #ifdef BOARD_HAS_AGENT_FACES
@@ -1374,6 +1398,11 @@ static void agents_refresh_visible(void) {
             lv_obj_clear_flag(agents_mini_initials[s], LV_OBJ_FLAG_HIDDEN);
         }
     }
+    for (int s = slots; s < AGENTS_MINI_MAX; ++s) {
+        agents_mini_agent[s] = nullptr;
+        lv_obj_add_flag(agents_minis[s], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(agents_mini_rings[s], LV_OBJ_FLAG_HIDDEN);
+    }
     if (multi) lv_obj_clear_flag(agents_count, LV_OBJ_FLAG_HIDDEN);
     else       lv_obj_add_flag(agents_count, LV_OBJ_FLAG_HIDDEN);
 }
@@ -1387,11 +1416,12 @@ static void agents_set_face_frame(int art, int frame) {
 }
 
 static void agents_render(int slot) {
-    const AgentMessage& m = agents_data.msgs[agents_visible[slot]];
+    const AgentMessage& m = *agents_visible[slot];
     const bool multi = agents_visible_count > 1;
     const int art = agent_art_index(m.agent);
     const uint32_t tint = agent_tint(m.agent);
     const int16_t face_x = (L.scr_w - AGENTS_FACE) / 2;
+    const int16_t shown = multi ? AGENTS_MULTI_FACE : AGENTS_FACE;
 
     if (art >= 0) {
         agents_set_face_frame(art, 0);
@@ -1400,17 +1430,20 @@ static void agents_render(int slot) {
         lv_obj_add_flag(agents_disc, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(agents_face, LV_OBJ_FLAG_HIDDEN);
-        const int16_t d = multi ? 200 : AGENTS_FACE;
-        lv_obj_set_size(agents_disc, d, d);
-        lv_obj_set_pos(agents_disc, (L.scr_w - d) / 2, AGENTS_FACE_Y + (AGENTS_FACE - d) / 2);
-        set_initial(lbl_agents_initial, m.name, tint, d);
+        lv_obj_set_size(agents_disc, shown, shown);
+        lv_obj_set_pos(agents_disc, (L.scr_w - shown) / 2, AGENTS_FACE_Y + (AGENTS_FACE - shown) / 2);
+        set_initial(lbl_agents_initial, m.name, tint, shown);
         lv_obj_clear_flag(agents_disc, LV_OBJ_FLAG_HIDDEN);
     }
-    const int16_t ring = multi ? 216 : AGENTS_FACE + 16;
+    const int16_t ring = shown + 16;
     lv_obj_set_size(agents_ring, ring, ring);
     lv_obj_set_pos(agents_ring, (L.scr_w - ring) / 2, AGENTS_FACE_Y + (AGENTS_FACE - ring) / 2);
     lv_obj_set_style_border_color(agents_ring, lv_color_hex(tint), 0);
     lv_obj_set_pos(agents_face, face_x, AGENTS_FACE_Y);
+
+    // Header names the Room for a Room reply, otherwise Pluribus.
+    lv_label_set_text_fmt(lbl_agents_header, "%s  \xC2\xB7  %u WAITING",
+                          m.room[0] ? m.room : "PLURIBUS", (unsigned)agents_waiting);
 
     char name[sizeof(m.name)];
     size_t i = 0;
@@ -1423,30 +1456,29 @@ static void agents_render(int slot) {
     else if (age < 60) lv_label_set_text_fmt(lbl_agents_age, "  \xC2\xB7  %lu MIN AGO", (unsigned long)age);
     else               lv_label_set_text_fmt(lbl_agents_age, "  \xC2\xB7  %luH AGO", (unsigned long)(age / 60));
     lv_label_set_text(lbl_agents_text, m.text);
-    lv_obj_set_pos(agents_who, 32, multi ? 306 : 356);
-    lv_obj_set_pos(lbl_agents_text, 32, multi ? 336 : 386);
+    lv_obj_set_pos(agents_who, 32, multi ? 292 : 324);
+    lv_obj_set_pos(lbl_agents_text, 32, multi ? 318 : 352);
 
-    for (int s = 0; s < AGENT_MSG_MAX; ++s) {
-        if (multi && s == slot) lv_obj_clear_flag(agents_mini_rings[s], LV_OBJ_FLAG_HIDDEN);
-        else                    lv_obj_add_flag(agents_mini_rings[s], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_style_opa(agents_minis[s], s == slot ? LV_OPA_COVER : 140, 0);
+    for (int s = 0; s < AGENTS_MINI_MAX; ++s) {
+        const bool current = agents_mini_agent[s] && strcmp(agents_mini_agent[s], m.agent) == 0;
+        if (multi && current) lv_obj_clear_flag(agents_mini_rings[s], LV_OBJ_FLAG_HIDDEN);
+        else                  lv_obj_add_flag(agents_mini_rings[s], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_opa(agents_minis[s], current ? LV_OPA_COVER : 140, 0);
     }
     lv_obj_add_flag(lbl_agents_hey, LV_OBJ_FLAG_HIDDEN);
-    agents_shown = agents_visible[slot];
+    strlcpy(agents_shown, m.id, sizeof(agents_shown));
     agents_frame = 0;
     agents_bob = 0;
     agents_hey = 0;
 }
 
-bool ui_update_agents(const AgentMessagesData* data) {
-    if (!data) return false;
-    agents_data = *data;
-    agents_received_ms = lv_tick_get();
-    agents_last_age_tick = 0;
+// After any change: note first-seen ids (wake once) and take or release the screen.
+static bool agents_after_change(void) {
+    agents_last_age_tick = lv_tick_get() / 60000U;
     agents_refresh_visible();
     bool arrived = false;
     for (int s = 0; s < agents_visible_count; ++s) {
-        const char* id = agents_data.msgs[agents_visible[s]].id;
+        const char* id = agents_visible[s]->id;
         if (!agent_id_in(agents_seen, id)) {
             agent_id_add(agents_seen, &agents_seen_next, id);
             arrived = true;
@@ -1458,6 +1490,28 @@ bool ui_update_agents(const AgentMessagesData* data) {
     else if (agents_visible_count == 0 && current_screen == SCREEN_AGENTS)
         ui_show_screen(SCREEN_SPLASH);
     return arrived;
+}
+
+bool ui_update_agents(const AgentMessagesData* data) {
+    if (!data) return false;
+    agents_data = *data;
+    const uint32_t now = lv_tick_get();
+    for (int i = 0; i < agents_data.count; ++i) agents_data.msgs[i].received_ms = now;
+    return agents_after_change();
+}
+
+bool ui_add_room_reply(const AgentMessage* reply) {
+    if (!reply || !reply->id[0]) return false;
+    AgentMessage* slot = nullptr;
+    for (int i = 0; i < AGENTS_ROOM_MAX && !slot; ++i)
+        if (strcmp(agents_rooms[i].id, reply->id) == 0) slot = &agents_rooms[i];
+    if (!slot) {   // new: overwrite the oldest slot in the ring
+        slot = &agents_rooms[agents_rooms_next];
+        agents_rooms_next = (agents_rooms_next + 1) % AGENTS_ROOM_MAX;
+    }
+    *slot = *reply;
+    slot->received_ms = lv_tick_get();
+    return agents_after_change();
 }
 
 void ui_update_artwork(const BleArtwork* artwork) {
@@ -1502,12 +1556,12 @@ static void update_music_progress(void) {
     lv_label_set_text(lbl_music_remaining, remaining);
 }
 
-// Per-loop agent screen work: hourly aging/expiry, turn-taking between
+// Per-loop agent screen work: per-minute aging/expiry, turn-taking between
 // several agents, and the single-agent "hey" loop (frames, bob, bubble).
 static void update_agents(void) {
-    if (!agents_screen_supported || agents_data.count == 0) return;
+    if (!agents_screen_supported) return;
     uint32_t now = lv_tick_get();
-    uint32_t minute = (now - agents_received_ms) / 60000U;
+    uint32_t minute = now / 60000U;
     if (minute != agents_last_age_tick) {
         agents_last_age_tick = minute;
         agents_refresh_visible();
@@ -1520,10 +1574,10 @@ static void update_agents(void) {
 
     const bool multi = agents_visible_count > 1;
     const int slot = multi ? (int)((now / AGENTS_TURN_MS) % agents_visible_count) : 0;
-    if (agents_visible[slot] != agents_shown) agents_render(slot);
+    if (strcmp(agents_visible[slot]->id, agents_shown) != 0) agents_render(slot);
     if (multi) return;   // turns stay still; only one agent says hey
 
-    const AgentMessage& m = agents_data.msgs[agents_shown];
+    const AgentMessage& m = *agents_visible[0];
     const int art = agent_art_index(m.agent);
     const uint32_t pct = (now % AGENTS_HEY_MS) * 100U / AGENTS_HEY_MS;
     // look -> wink -> "hey" (mouth open twice) -> look; agents without extra
@@ -1680,7 +1734,7 @@ static void agents_click_cb(lv_event_t* e) {
     (void)e;
     for (int s = 0; s < agents_visible_count; ++s)
         agent_id_add(agents_dismissed, &agents_dismissed_next,
-                     agents_data.msgs[agents_visible[s]].id);
+                     agents_visible[s]->id);
     agents_refresh_visible();
     if (agents_visible_count == 0) ui_show_screen(SCREEN_SPLASH);
 }
@@ -1713,7 +1767,7 @@ void ui_show_screen(screen_t screen) {
         break;
     case SCREEN_AGENTS:
         if (agents_container && agents_visible_count > 0) {
-            agents_shown = -1;   // render on the next tick
+            agents_shown[0] = '\0';   // render on the next tick
             lv_obj_clear_flag(agents_container, LV_OBJ_FLAG_HIDDEN);
         } else
             screen = SCREEN_SPLASH, splash_show();

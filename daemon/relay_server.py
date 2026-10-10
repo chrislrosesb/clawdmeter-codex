@@ -26,14 +26,18 @@ from pathlib import Path
 try:
     from daemon import claude_usage_daemon as usage_source
     from daemon import agent_messages as pluribus_source
+    from daemon import chat_replies
 except ImportError:
     import claude_usage_daemon as usage_source
     import agent_messages as pluribus_source
+    import chat_replies
 
 
 DEFAULT_CONFIG = Path.home() / ".config" / "claude-usage-monitor" / "relay-server.json"
 USAGE_INTERVAL = 60.0
 PLURIBUS_INTERVAL = 15.0
+ROOMS_INTERVAL = 5.0
+MAX_ROOMS_BYTES = 16 * 1024
 MAX_WIRE_BYTES = 512
 
 
@@ -79,6 +83,7 @@ class StateStore:
         self._lock = threading.Lock()
         self._usage: dict | None = None
         self._pluribus: dict | None = None
+        self._rooms: dict | None = None
 
     def update_usage(self, payload: dict, observed_at: float | None = None) -> None:
         if not _valid_wire_payload(payload):
@@ -100,10 +105,23 @@ class StateStore:
         with self._lock:
             self._pluribus = slot
 
+    def update_rooms(self, payload: dict, observed_at: float | None = None) -> None:
+        replies = payload.get("replies") if isinstance(payload, dict) else None
+        if (not isinstance(replies, list) or not all(map(chat_replies.valid_reply, replies))
+                or len(json.dumps(payload)) >= MAX_ROOMS_BYTES):
+            raise ValueError("invalid or oversized rooms payload")
+        slot = {
+            "observed_at": time.time() if observed_at is None else observed_at,
+            "payload": payload,
+        }
+        with self._lock:
+            self._rooms = slot
+
     def snapshot(self, generated_at: float | None = None) -> dict:
         with self._lock:
             usage = copy.deepcopy(self._usage)
             pluribus = copy.deepcopy(self._pluribus)
+            rooms = copy.deepcopy(self._rooms)
         body = {
             "version": 1,
             "generated_at": time.time() if generated_at is None else generated_at,
@@ -112,6 +130,8 @@ class StateStore:
             body["usage"] = usage
         if pluribus is not None:
             body["pluribus"] = pluribus
+        if rooms is not None:
+            body["rooms"] = rooms   # older work-Mac receivers ignore this slot
         return body
 
 
@@ -146,6 +166,8 @@ def make_handler(store: StateStore, token: str):
 async def collect(store: StateStore, stop_event: asyncio.Event) -> None:
     next_usage = 0.0
     next_pluribus = 0.0
+    next_rooms = 0.0
+    last_room_count = -1
     while not stop_event.is_set():
         now = time.time()
         if now >= next_usage:
@@ -171,6 +193,19 @@ async def collect(store: StateStore, stop_event: asyncio.Event) -> None:
                     log("Updated agent messages")
             except Exception as exc:
                 log(f"Pluribus collection failed: {type(exc).__name__}")
+
+        if now >= next_rooms:
+            next_rooms = now + ROOMS_INTERVAL
+            try:
+                result = await asyncio.to_thread(chat_replies.fetch_recent)
+                if result.available and result.payload is not None:
+                    store.update_rooms(result.payload)
+                    count = len(result.payload["replies"])
+                    if count != last_room_count:
+                        last_room_count = count
+                        log(f"Updated chat replies ({count} recent)")
+            except Exception as exc:
+                log(f"Chat reply collection failed: {type(exc).__name__}")
 
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=1.0)

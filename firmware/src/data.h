@@ -42,7 +42,9 @@ struct NowPlayingData {
     uint16_t artwork_generation;
 };
 
-// Pluribus agent messages waiting for Chris — the payload's "am" object,
+// Pluribus agent messages waiting for Chris. A chat/Room reply arrives as its
+// own {"rm":{...}} frame using the same AgentMessage shape.
+// — the payload's "am" object,
 // newest message per agent (up to AGENT_MSG_MAX agents). Captions are
 // display-safe ASCII from the host; transcripts never reach the device.
 #define AGENT_MSG_MAX 3
@@ -50,8 +52,10 @@ struct AgentMessage {
     char id[13];            // Pluribus feed entry id (dismissal key)
     char agent[17];         // Pluribus agent id, e.g. "champion" (face lookup)
     char name[17];          // display name, e.g. "Tori"
-    char text[49];          // one-line caption
+    char room[21];          // Room title for a chat/Room reply; "" for a check-in
+    char text[57];          // caption, up to two lines on the 480 px panel
     uint32_t age_minutes;   // age when the host observed it
+    uint32_t received_ms;   // device clock when it arrived (set by the UI)
 };
 
 struct AgentMessagesData {

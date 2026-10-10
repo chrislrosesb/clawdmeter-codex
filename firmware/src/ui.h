@@ -16,6 +16,8 @@ void ui_update(const UsageData* data);
 void ui_update_now_playing(const NowPlayingData* data);
 // Returns true when a message not seen before arrived (caller wakes the panel).
 bool ui_update_agents(const AgentMessagesData* data);
+// One chat/Room reply ({"rm":...}); queued with check-ins. Same return meaning.
+bool ui_add_room_reply(const AgentMessage* reply);
 void ui_update_artwork(const BleArtwork* artwork);
 void ui_tick_anim(void);
 void ui_tick_screen_rotation(void);

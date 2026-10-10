@@ -3,3 +3,4 @@
 {"name":"agent without art","hold_ms":3000,"am":{"n":1,"m":[{"i":"sim000000001","g":"therapist","w":"Naomi","t":"Worth a word about Sunday","a":1}]}}
 {"name":"two agents","hold_ms":3000,"am":{"n":2,"m":[{"i":"sim000000001","g":"therapist","w":"Naomi","t":"Worth a word about Sunday","a":1},{"i":"sim000000002","g":"darwin","w":"Darwin","t":"Found a great coffee spot near...","a":6}]}}
 {"name":"cleared in app","hold_ms":3000,"am":{"n":0,"m":[]}}
+{"name":"room reply","hold_ms":3000,"rm":{"i":"simroom00001","r":"DEAL ROOM","g":"skeptic","w":"Sloane","t":"The margin math only works if Silver Air signs...","a":0}}

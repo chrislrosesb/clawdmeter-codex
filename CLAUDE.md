@@ -42,6 +42,15 @@ conflict. Known-good baseline: commit `e047ee4` on 2026-09-08.
   by `tools/gen_agent_faces.py` (`BOARD_HAS_AGENT_FACES`, 2.16 envs only); other
   boards and unknown agents get an initial on a disc. Serial `agentdemo N`
   (N = 0..3) shows sample messages for screenshots. No audio this round.
+- Chat and Room replies (2026-10-10) join the same screen: every finished agent
+  reply in a shared chat or Room pops up, regardless of Pluribus read state (the
+  Mac app marks a buried-but-open window as read). Source: each session's
+  `_chat_reply_receipts` via `/api/ask/sessions` (`daemon/chat_replies.py`, 5 s
+  poll, last 3 h, skips private, meeting-bound and proactive). Each reply is its
+  own `{"rm":{i,r,g,w,t,a}}` frame; the device keeps 12, shows them oldest first
+  in 5 s turns with two-line captions, the Room title in the header, a row of up
+  to 4 distinct faces, and clears on tap. The relay carries them in a separate
+  `rooms` slot; a work Mac needs `git pull` + daemon restart to forward them.
 - USB cable link (2026-10-10): when the device is plugged into a Mac running the
   daemon, it drives the display over USB serial instead of Bluetooth
   (`daemon/usb_link.py`, stdlib termios, no pyserial). Line protocol on the

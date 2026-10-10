@@ -40,6 +40,7 @@ class RelayState:
     available: bool
     usage: dict | None = None
     pluribus: dict | None = None
+    rooms: list | None = None   # recent chat/Room replies (``rm`` items)
 
 
 def _config_values(path: Path) -> dict[str, str]:
@@ -141,4 +142,16 @@ def fetch_state(
             base_age = pb.get("a", 0)
             if isinstance(base_age, int) and base_age >= 0:
                 pb["a"] = base_age + int(pluribus_age // 60)
-    return RelayState(True, usage=usage, pluribus=pluribus)
+    rooms = None
+    slot = body.get("rooms")
+    if isinstance(slot, dict) and isinstance(slot.get("observed_at"), (int, float)):
+        slot_age = now - float(slot["observed_at"])
+        replies = (slot.get("payload") or {}).get("replies")
+        if -60 <= slot_age <= ENVELOPE_MAX_AGE and isinstance(replies, list):
+            rooms = []
+            for item in replies[:24]:
+                if (isinstance(item, dict) and isinstance(item.get("i"), str)
+                        and isinstance(item.get("a"), int) and item["a"] >= 0
+                        and _wire_payload({"rm": item}) is not None):
+                    rooms.append({**item, "a": item["a"] + int(max(0.0, slot_age) // 60)})
+    return RelayState(True, usage=usage, pluribus=pluribus, rooms=rooms)

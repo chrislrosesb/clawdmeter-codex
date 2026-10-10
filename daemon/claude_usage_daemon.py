@@ -30,6 +30,7 @@ try:
     from daemon import codex_source  # package context (tests)
     from daemon import pluribus_activity as pluribus_source
     from daemon import agent_messages
+    from daemon import chat_replies
     from daemon import relay_source
     try:
         from daemon import usb_link
@@ -39,6 +40,7 @@ except ImportError:
     import codex_source  # script context (launchd/systemd run the file directly)
     import pluribus_activity as pluribus_source
     import agent_messages
+    import chat_replies
     import relay_source
     try:
         import usb_link
@@ -66,6 +68,7 @@ TICK = 5
 CONNECT_TIMEOUT = 20.0
 MUSIC_POLL_INTERVAL = 5.0
 PLURIBUS_POLL_INTERVAL = 15.0
+ROOMS_POLL_INTERVAL = 5.0
 USB_CHECK_INTERVAL = 30.0   # how often a Bluetooth session looks for a USB cable
 ART_MAGIC = 0xA5
 ART_START = 0x01
@@ -722,6 +725,15 @@ def fetch_display_pluribus() -> pluribus_source.PollResult:
     return agent_messages.fetch_waiting()
 
 
+def fetch_display_rooms() -> list | None:
+    """Recent chat/Room replies, local or relayed; None = unavailable."""
+    if relay_source.is_configured():
+        state = relay_source.fetch_state()
+        return state.rooms if state.available else None
+    result = chat_replies.fetch_recent()
+    return result.payload["replies"] if result.available else None
+
+
 class Session:
     def __init__(self, client: BleakClient) -> None:
         self.client = client
@@ -904,6 +916,8 @@ async def run_session(session, stop_event: asyncio.Event, is_connected,
     last_pluribus_payload: object = object()
     used_successfully = False
     next_usb_check = time.time() + USB_CHECK_INTERVAL
+    next_rooms_poll = 0.0
+    rooms_sent: set[str] = set()   # reply ids written this session; the device dedups too
     while is_connected() and not stop_event.is_set():
         now = time.time()
         elapsed = now - last_poll
@@ -1002,6 +1016,24 @@ async def run_session(session, stop_event: asyncio.Event, is_connected,
                 if await session.write_payload(result.payload):
                     last_pluribus_payload = result.payload
                     used_successfully = True
+
+        # Chat and Room replies: each new one is its own small frame.
+        if time.time() >= next_rooms_poll:
+            next_rooms_poll = time.time() + ROOMS_POLL_INTERVAL
+            try:
+                replies = await asyncio.to_thread(fetch_display_rooms)
+            except Exception as e:
+                log(f"Chat reply source failed: {type(e).__name__}")
+                replies = None
+            for item in replies or []:
+                if item.get("i") in rooms_sent:
+                    continue
+                if not await session.write_payload({"rm": item}):
+                    break
+                rooms_sent.add(item["i"])
+                used_successfully = True
+            if len(rooms_sent) > 200:
+                rooms_sent = {r["i"] for r in replies or []}
 
         try:
             await asyncio.wait_for(session.refresh_requested.wait(), timeout=1.0)
