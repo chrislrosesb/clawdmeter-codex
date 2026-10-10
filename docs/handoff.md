@@ -28,6 +28,20 @@ sales-marketing agent (Scarlett is the old name). Type sizes match fonts already
 in firmware (Mono 18, Styrene 28, Tiempos 34); web fonts stand in. Content keeps
 32 px from the edges for the rounded corners.
 
+**Chris's decisions (2026-10-10, after reviewing):**
+- A waiting message interrupts the 30 s rotation; tapping the screen dismisses it
+  and rotation resumes.
+- Dismiss clears on the device only — no read-sync back to Pluribus/iPhone/iPad.
+- Faces are pre-baked into firmware (fastest), not sent over BLE.
+- **No audio this round:** drop state 4 (talking), no voice toggle, no phone-mute
+  routing. When voices return, the left button (currently HID Space, unused by
+  Chris) is the likely on/off switch; voice would likely play from the work Mac.
+- The agent-message screen replaces the current Pluribus activity screen; Claude,
+  Codex, Now Playing and Clawd screens stay as they are.
+- Mockup stays as is (state 4 kept as a labelled placeholder).
+
+**Superseded below:** the interrupt/dismiss/face-art questions are answered above.
+
 **Not decided / next:** whether "message waiting" interrupts the 30 s rotation or
 joins it; how a message is dismissed (tap? button?); how face art reaches the
 device (pre-baked in flash vs. sent over BLE like album art — PSRAM is available
