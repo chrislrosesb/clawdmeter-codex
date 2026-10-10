@@ -17,6 +17,7 @@ need the same port: stop the daemon first, as the runbook already says.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import glob
 import json
 import os
@@ -49,6 +50,13 @@ class UsbPort:
     def __init__(self, path: str) -> None:
         self.path = path
         self.fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+        try:
+            # Exclusive: a flash or screenshot tool fails fast instead of
+            # sharing the port and losing lines to this reader.
+            fcntl.ioctl(self.fd, termios.TIOCEXCL)
+        except OSError:
+            os.close(self.fd)
+            raise
         attrs = termios.tcgetattr(self.fd)
         attrs[0] = 0                                  # iflag: raw
         attrs[1] = 0                                  # oflag: raw

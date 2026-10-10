@@ -4,6 +4,34 @@ Short running notes for the next session. The canonical deployment runbook is
 `CLAUDE.md`; the shared agent-bridge handoff and decision log hold the Phase 1/2
 history.
 
+## 2026-10-10 — USB cable link (Bluetooth kept as fallback)
+
+**What it does:** plug the Clawdmeter into a Mac running the daemon and that Mac
+drives it over the cable: no pairing, about 20x faster (a 5 KB cover went over in
+0.07 s). Unplugged, everything works over Bluetooth as before. While the cable is
+live, the device ignores Bluetooth data, so the cabled Mac is the one owner.
+
+**Pieces:** firmware line protocol in `main.cpp` (`check_serial_cmd`:
+`{json}`, `@<hex>` packets, `clawdmeter?` handshake) feeding `ble_usb_packet()`
+in `ble.cpp`; the UI treats live USB as "connected". Daemon:
+`daemon/usb_link.py` (stdlib termios, exclusive port) and `run_session()` in
+`claude_usage_daemon.py`, shared by USB and BLE; USB is tried first each cycle
+and a BLE session hands over when a cable appears (30 s check). Tests:
+`daemon/tests/test_usb_link.py` (pty-based fake device).
+
+**Verified on hardware (Mac mini, USB):** handshake, usage, the real waiting
+Darwin message (screenshot), and test album art + Now Playing.
+
+**Gotchas:** the daemon now holds the serial port when the device is cabled:
+stop the LaunchAgent before flashing, `screenshot.sh` or the audio test (they
+fail fast with "busy"). The Mac mini restarted mid-session and the device's USB
+stopped answering until it was physically replugged; a flash attempt then
+succeeded. `launchctl unload` without `-w` does not survive a reboot: the
+Mac-mini daemon LaunchAgent came back at login. With the USB code that is now
+intended: it drives the device whenever it's cabled to the Mac mini, and stays
+idle otherwise. Buttons still go over Bluetooth HID only. Using the cable on
+the work Mac needs `git pull` there and a daemon restart.
+
 ## 2026-10-10 — Agent-message screen built (firmware + host)
 
 **What it does:** when a Pluribus agent sends Chris a proactive message he has

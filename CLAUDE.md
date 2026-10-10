@@ -42,6 +42,18 @@ conflict. Known-good baseline: commit `e047ee4` on 2026-09-08.
   by `tools/gen_agent_faces.py` (`BOARD_HAS_AGENT_FACES`, 2.16 envs only); other
   boards and unknown agents get an initial on a disc. Serial `agentdemo N`
   (N = 0..3) shows sample messages for screenshots. No audio this round.
+- USB cable link (2026-10-10): when the device is plugged into a Mac running the
+  daemon, it drives the display over USB serial instead of Bluetooth
+  (`daemon/usb_link.py`, stdlib termios, no pyserial). Line protocol on the
+  firmware's serial port: `{json}` payload, `@<hex>` binary artwork packet (1 KB
+  chunks), both answered `#ok`/`#err`; `clawdmeter?` → `CLAWDMETER usb1` is the
+  handshake and 30 s keepalive. While USB traffic is under 150 s old the
+  firmware ignores BLE data writes (`ble_usb_active()`), so the cabled Mac is the
+  owner; buttons still use BLE HID. A BLE session checks for the cable every
+  30 s and hands over. The daemon then holds the serial port: stop its
+  LaunchAgent before flashing, `screenshot.sh`, or the audio test. A Mac-mini
+  daemon is safe to run now: it only uses BLE if macOS on the Mac mini holds the
+  device, and over USB it wins only while the cable is in.
 - Claude usage comes from Claude Code credentials; Codex usage is read passively
   from local Codex session logs; Apple Music metadata/artwork comes from the Mac
   currently playing the music; agent messages come from the local Pluribus
