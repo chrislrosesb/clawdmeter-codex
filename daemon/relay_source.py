@@ -100,6 +100,22 @@ def _slot(body: dict, name: str, now: float, max_age: int) -> tuple[dict | None,
     return _wire_payload(slot.get("payload")), max(0.0, age)
 
 
+def post_read(ids: list[str], *, config_path: Path = CONFIG_FILE,
+              client_factory: Callable[..., httpx.Client] = httpx.Client) -> bool:
+    """Ask the Mac mini to mark device-tapped messages read in Pluribus."""
+    config = read_config(config_path)
+    if config is None or not ids:
+        return False
+    url = config.url.rsplit("/v1/", 1)[0] + "/v1/read"
+    try:
+        with client_factory(timeout=REQUEST_TIMEOUT) as client:
+            response = client.post(url, json={"ids": ids[:24]},
+                                   headers={"Authorization": f"Bearer {config.token}"})
+            return response.status_code < 300
+    except httpx.HTTPError:
+        return False
+
+
 def fetch_state(
     *,
     config_path: Path = CONFIG_FILE,

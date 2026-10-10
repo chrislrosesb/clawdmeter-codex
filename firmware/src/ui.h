@@ -1,4 +1,5 @@
 #pragma once
+#include <stddef.h>
 #include "data.h"
 #include "ble.h"
 
@@ -20,6 +21,10 @@ bool ui_update_agents(const AgentMessagesData* data);
 bool ui_add_room_reply(const AgentMessage* reply);
 // Same as a tap on the agent screen: clear everything waiting (device only).
 void ui_agents_dismiss_all(void);
+// Pluribus says these were read ({"rd":[...]}): clear them, no tap report.
+void ui_agents_dismiss_ids(const char* const* ids, int n);
+// Tapped ids since the last call, comma-separated into out; 0 if none.
+int ui_take_agent_taps(char* out, size_t len, uint16_t* seq);
 void ui_update_artwork(const BleArtwork* artwork);
 void ui_tick_anim(void);
 void ui_tick_screen_rotation(void);

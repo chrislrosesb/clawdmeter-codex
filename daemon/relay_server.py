@@ -157,6 +157,30 @@ def make_handler(store: StateStore, token: str):
             self.end_headers()
             self.wfile.write(encoded)
 
+        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            """POST /v1/read {"ids": [...]}: a device tap on the work Mac."""
+            supplied = self.headers.get("Authorization", "")
+            if not hmac.compare_digest(supplied, f"Bearer {token}"):
+                self.send_error(HTTPStatus.UNAUTHORIZED)
+                return
+            if self.path != "/v1/read":
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            try:
+                length = min(int(self.headers.get("Content-Length", "0")), 4096)
+                ids = json.loads(self.rfile.read(length)).get("ids")
+                ids = [i for i in ids if isinstance(i, str)][:24]
+            except (ValueError, AttributeError, TypeError):
+                self.send_error(HTTPStatus.BAD_REQUEST)
+                return
+            marked = chat_replies.mark_read(ids)
+            encoded = json.dumps({"ok": True, "marked": marked}).encode()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
         def log_message(self, _format: str, *_args: object) -> None:
             return
 
@@ -185,14 +209,10 @@ async def collect(store: StateStore, stop_event: asyncio.Event) -> None:
                 log(f"Usage collection failed: {type(exc).__name__}")
 
         if now >= next_pluribus:
-            next_pluribus = now + PLURIBUS_INTERVAL
-            try:
-                result = await asyncio.to_thread(pluribus_source.fetch_waiting)
-                if result.available and result.payload is not None:
-                    store.update_pluribus(result.payload)
-                    log("Updated agent messages")
-            except Exception as exc:
-                log(f"Pluribus collection failed: {type(exc).__name__}")
+            # The Team-feed check-in list is retired (check-ins now arrive as
+            # unread chat messages); publish it empty so older receivers clear.
+            next_pluribus = float("inf")
+            store.update_pluribus({"am": {"n": 0, "m": []}})
 
         if now >= next_rooms:
             next_rooms = now + ROOMS_INTERVAL

@@ -179,6 +179,17 @@ static bool parse_agent_messages_json(const char* json, AgentMessagesData* out,
         *legacy = true;
         return true;
     }
+    JsonVariantConst rd = doc["rd"];
+    if (!rd.isUnbound()) {   // read in Pluribus: clear these ids
+        *recognized = true;
+        *legacy = true;
+        const char* ids[24];
+        int n = 0;
+        for (JsonVariantConst v : rd.as<JsonArrayConst>())
+            if (n < 24 && v.is<const char*>()) ids[n++] = v.as<const char*>();
+        ui_agents_dismiss_ids(ids, n);
+        return true;
+    }
     JsonVariantConst rm = doc["rm"];
     if (!rm.isUnbound()) {   // one chat/Room reply, queued by the UI
         *recognized = true;
@@ -229,7 +240,7 @@ static void agent_demo(int n) {
     static const char* const names[]  = {"Tori", "Sloane", "Mila"};
     static const char* const texts[]  = {"Proud of today's pitch", "Check the Q4 margin math",
                                          "Silver Air pricing note"};
-    static const uint32_t ages[] = {2, 9, 14};
+    static const uint32_t ages[] = {0, 1, 2};
     AgentMessagesData demo = {};
     if (n < 0) n = 0;
     if (n > AGENT_MSG_MAX) n = AGENT_MSG_MAX;
@@ -545,6 +556,20 @@ void loop() {
 
     check_serial_cmd();
     audio_test_tick();
+
+    // Taps on the agent screen go back to the Mac, which marks them read in
+    // Pluribus (clearing the phone too): a "#tap" line over USB, and the
+    // readable TX value over BLE.
+    {
+        char ids[8 * 13 + 8];
+        uint16_t seq = 0;
+        if (ui_take_agent_taps(ids, sizeof(ids), &seq)) {
+            Serial.printf("#tap %s\n", ids);
+            char report[160];
+            snprintf(report, sizeof(report), "{\"tap\":\"%s\",\"s\":%u}", ids, seq);
+            ble_set_tap_report(report);
+        }
+    }
 
     BleArtwork artwork;
     if (ble_take_artwork(&artwork)) ui_update_artwork(&artwork);

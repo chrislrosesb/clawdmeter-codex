@@ -143,6 +143,7 @@ void ble_set_battery_level(int pct) { (void)pct; }
 int ble_usb_packet(const uint8_t* data, size_t len) { (void)data; (void)len; return 0; }
 void ble_usb_note_alive(void) {}
 bool ble_usb_active(void) { return false; }
+void ble_set_tap_report(const char* json) { (void)json; }
 bool ble_take_artwork(BleArtwork* out) {
     if (!fake_art_ready || !out) return false;
     fake_art_ready = false;

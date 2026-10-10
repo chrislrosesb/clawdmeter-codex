@@ -309,8 +309,21 @@ static char agents_dismissed[AGENTS_ID_RING][13] = {};   // tapped away here
 static uint8_t agents_dismissed_next = 0;
 static char agents_seen[AGENTS_ID_RING][13] = {};        // already announced (wake once)
 static uint8_t agents_seen_next = 0;
-static const uint32_t AGENTS_EXPIRY_MINUTES = 24 * 60;     // check-ins
-static const uint32_t AGENTS_ROOM_EXPIRY_MINUTES = 3 * 60;  // chat/Room replies
+// Messages drop off on their own after five minutes; reading them in Pluribus
+// (any device) or a tap here clears them sooner.
+static const uint32_t AGENTS_EXPIRY_MINUTES = 5;
+static const uint32_t AGENTS_ROOM_EXPIRY_MINUTES = 5;
+static const uint32_t AGENTS_POP_MS = 15000;   // a new message holds the screen this long
+static uint32_t agents_pop_until = 0;
+// Tapped ids waiting to be reported to the Mac (marked read in Pluribus).
+static char agents_tapped[8][13] = {};
+static uint8_t agents_tapped_count = 0;
+static uint16_t agents_tap_seq = 0;
+// Corner hint on the other screens: newest waiting agent + count.
+static lv_obj_t* agents_hint = nullptr;
+static lv_obj_t* agents_hint_img = nullptr;
+static lv_obj_t* agents_hint_initial = nullptr;
+static lv_obj_t* lbl_agents_hint_count = nullptr;
 static const uint32_t AGENTS_HEY_MS = 3200;
 static const uint32_t AGENTS_TURN_MS = 5000;
 static const int16_t AGENTS_FACE = 224;
@@ -928,6 +941,7 @@ static void init_rgb565_dsc(lv_image_dsc_t* d, int w, int h, const void* data) {
 #endif
 
 static void agents_click_cb(lv_event_t* e);
+static void agents_update_hint(void);
 
 static void init_agents_screen(lv_obj_t* scr) {
     agents_screen_supported = L.scr_w >= 400 && L.scr_h >= 450;
@@ -1043,6 +1057,26 @@ static void init_agents_screen(lv_obj_t* scr) {
     lv_obj_align(agents_count, LV_ALIGN_TOP_RIGHT, -32, 404);
 
     lv_obj_add_flag(agents_container, LV_OBJ_FLAG_HIDDEN);
+
+    // Corner hint, shown on the usage/Codex/music screens while anything waits.
+    agents_hint = make_disc(scr, 44, 0x3a3833, LV_OPA_COVER, 0xf3efe6, 2);
+    lv_obj_set_pos(agents_hint, W - 20 - 44, 20);
+    agents_hint_initial = make_agents_label(agents_hint, &font_styrene_20, 0xf3efe6);
+    lv_label_set_text(agents_hint_initial, "");
+    agents_hint_img = lv_image_create(agents_hint);
+    lv_image_set_scale(agents_hint_img, 216);   // 52 px mini -> ~44 px
+    lv_obj_set_size(agents_hint_img, 52, 52);
+    lv_obj_center(agents_hint_img);
+    lv_obj_add_flag(agents_hint_img, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lbl_agents_hint_count = make_agents_label(scr, &font_styrene_16, 0x111111);
+    lv_obj_set_style_bg_color(lbl_agents_hint_count, lv_color_hex(0xf3efe6), 0);
+    lv_obj_set_style_bg_opa(lbl_agents_hint_count, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(lbl_agents_hint_count, 10, 0);
+    lv_obj_set_style_pad_hor(lbl_agents_hint_count, 6, 0);
+    lv_obj_set_style_pad_ver(lbl_agents_hint_count, 1, 0);
+    lv_obj_set_pos(lbl_agents_hint_count, W - 20 - 18, 50);
+    lv_obj_add_flag(agents_hint, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(lbl_agents_hint_count, LV_OBJ_FLAG_HIDDEN);
 }
 
 // ======== Public API ========
@@ -1409,6 +1443,41 @@ static void agents_refresh_visible(void) {
     }
     if (multi) lv_obj_clear_flag(agents_count, LV_OBJ_FLAG_HIDDEN);
     else       lv_obj_add_flag(agents_count, LV_OBJ_FLAG_HIDDEN);
+    agents_update_hint();
+}
+
+// The corner hint mirrors the newest waiting message on the other screens.
+static void agents_update_hint(void) {
+    if (!agents_hint) return;
+    const bool show = agents_visible_count > 0 &&
+        (current_screen == SCREEN_USAGE || current_screen == SCREEN_CODEX ||
+         current_screen == SCREEN_NOW_PLAYING);
+    if (!show) {
+        lv_obj_add_flag(agents_hint, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lbl_agents_hint_count, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    const AgentMessage& m = *agents_visible[agents_visible_count - 1];
+    int art = agent_art_index(m.agent);
+#ifdef BOARD_HAS_AGENT_FACES
+    if (art >= 0) {
+        lv_image_set_src(agents_hint_img, &agents_mini_dscs[art]);
+        lv_obj_clear_flag(agents_hint_img, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(agents_hint_initial, LV_OBJ_FLAG_HIDDEN);
+    } else
+#endif
+    {
+        (void)art;
+        lv_obj_add_flag(agents_hint_img, LV_OBJ_FLAG_HIDDEN);
+        set_initial(agents_hint_initial, m.name, agent_tint(m.agent), 44);
+        lv_obj_clear_flag(agents_hint_initial, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_set_style_border_color(agents_hint, lv_color_hex(agent_tint(m.agent)), 0);
+    lv_label_set_text_fmt(lbl_agents_hint_count, "%u", (unsigned)agents_waiting);
+    lv_obj_clear_flag(agents_hint, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(lbl_agents_hint_count, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(agents_hint);
+    lv_obj_move_foreground(lbl_agents_hint_count);
 }
 
 static void agents_set_face_frame(int art, int frame) {
@@ -1489,10 +1558,12 @@ static bool agents_after_change(void) {
         }
     }
     if (!agents_screen_supported) return false;
-    if (agents_visible_count > 0 && (arrived || current_screen == SCREEN_AGENTS))
+    if (arrived && agents_visible_count > 0) {   // pop: hold the screen for 15 s
+        agents_pop_until = lv_tick_get() + AGENTS_POP_MS;
         ui_show_screen(SCREEN_AGENTS);
-    else if (agents_visible_count == 0 && current_screen == SCREEN_AGENTS)
+    } else if (agents_visible_count == 0 && current_screen == SCREEN_AGENTS) {
         ui_show_screen(SCREEN_SPLASH);
+    }
     return arrived;
 }
 
@@ -1577,7 +1648,8 @@ static void update_agents(void) {
     if (current_screen != SCREEN_AGENTS || agents_visible_count == 0) return;
 
     const bool multi = agents_visible_count > 1;
-    const int slot = multi ? (int)((now / AGENTS_TURN_MS) % agents_visible_count) : 0;
+    // Turns start from the oldest message each time the screen comes up.
+    const int slot = multi ? (int)(((now - last_screen_change_ms) / AGENTS_TURN_MS) % agents_visible_count) : 0;
     if (strcmp(agents_visible[slot]->id, agents_shown) != 0) agents_render(slot);
     if (multi) return;   // turns stay still; only one agent says hey
 
@@ -1726,6 +1798,9 @@ static void advance_screen(void) {
     } else if ((current_screen == SCREEN_USAGE || current_screen == SCREEN_CODEX) &&
                music_screen_supported && music_playing) {
         ui_show_screen(SCREEN_NOW_PLAYING);
+    } else if (current_screen != SCREEN_AGENTS && current_screen != SCREEN_SPLASH &&
+               agents_screen_supported && agents_visible_count > 0) {
+        ui_show_screen(SCREEN_AGENTS);   // waiting messages take a turn
     } else {
         ui_show_screen(SCREEN_SPLASH);
     }
@@ -1744,19 +1819,45 @@ static void agents_click_cb(lv_event_t* e) {
 }
 
 void ui_agents_dismiss_all(void) {
-    for (int s = 0; s < agents_visible_count; ++s)
-        agent_id_add(agents_dismissed, &agents_dismissed_next,
-                     agents_visible[s]->id);
+    for (int s = 0; s < agents_visible_count; ++s) {
+        const char* id = agents_visible[s]->id;
+        agent_id_add(agents_dismissed, &agents_dismissed_next, id);
+        if (agents_tapped_count < 8) strlcpy(agents_tapped[agents_tapped_count++], id, 13);
+    }
     agents_refresh_visible();
     if (agents_visible_count == 0) ui_show_screen(SCREEN_SPLASH);
 }
 
-void ui_tick_screen_rotation(void) {
-    if (agents_screen_supported && agents_visible_count > 0) {
-        if (current_screen != SCREEN_AGENTS) ui_show_screen(SCREEN_AGENTS);
-        return;   // waiting messages hold the screen until tapped
+void ui_agents_dismiss_ids(const char* const* ids, int n) {
+    for (int i = 0; i < n; ++i)
+        if (ids[i] && ids[i][0]) agent_id_add(agents_dismissed, &agents_dismissed_next, ids[i]);
+    agents_refresh_visible();
+    if (agents_visible_count == 0 && current_screen == SCREEN_AGENTS) ui_show_screen(SCREEN_SPLASH);
+}
+
+int ui_take_agent_taps(char* out, size_t len, uint16_t* seq) {
+    if (!agents_tapped_count || !out || len < 2) return 0;
+    size_t pos = 0;
+    out[0] = '\0';
+    int n = 0;
+    for (; n < agents_tapped_count; ++n) {
+        int w = snprintf(out + pos, len - pos, "%s%s", n ? "," : "", agents_tapped[n]);
+        if (w < 0 || pos + w >= len) break;
+        pos += w;
     }
+    agents_tapped_count = 0;
+    *seq = ++agents_tap_seq;
+    return n;
+}
+
+void ui_tick_screen_rotation(void) {
     uint32_t now = lv_tick_get();
+    if (current_screen == SCREEN_AGENTS) {
+        // A pop or a rotation turn on the messages lasts 15 s.
+        uint32_t hold = (int32_t)(agents_pop_until - now) > 0 ? agents_pop_until - now : 0;
+        if (hold == 0 && now - last_screen_change_ms >= AGENTS_POP_MS) advance_screen();
+        return;
+    }
     if (now - last_screen_change_ms >= SCREEN_ROTATE_MS) advance_screen();
 }
 
@@ -1810,6 +1911,7 @@ void ui_show_screen(screen_t screen) {
     current_screen = screen;
     last_screen_change_ms = lv_tick_get();
     apply_battery_visibility();
+    agents_update_hint();
 }
 
 void ui_toggle_splash(void) {

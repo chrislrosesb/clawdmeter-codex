@@ -125,9 +125,8 @@ static uint32_t crc32_bytes(const uint8_t* data, size_t len) {
 static void notify_artwork_status(bool ok, uint16_t generation) {
     if (!tx_char) return;
     char msg[40];
-    snprintf(msg, sizeof(msg), "{\"art\":%s,\"g\":%u}", ok ? "true" : "false", generation);
-    tx_char->setValue(msg);
-    tx_char->notify();
+    int n = snprintf(msg, sizeof(msg), "{\"art\":%s,\"g\":%u}", ok ? "true" : "false", generation);
+    tx_char->notify((const uint8_t*)msg, n);   // keep the readable value for tap reports
 }
 
 static void receive_artwork_packet(const uint8_t* data, size_t len) {
@@ -573,16 +572,20 @@ const char* ble_get_data(void) {
 
 void ble_send_ack(void) {
     if (state == BLE_STATE_CONNECTED && tx_char) {
-        tx_char->setValue("{\"ack\":true}");
-        tx_char->notify();
+        static const char msg[] = "{\"ack\":true}";
+        tx_char->notify((const uint8_t*)msg, sizeof(msg) - 1);
     }
 }
 
 void ble_send_nack(void) {
     if (state == BLE_STATE_CONNECTED && tx_char) {
-        tx_char->setValue("{\"err\":true}");
-        tx_char->notify();
+        static const char msg[] = "{\"err\":true}";
+        tx_char->notify((const uint8_t*)msg, sizeof(msg) - 1);
     }
+}
+
+void ble_set_tap_report(const char* json) {
+    if (tx_char) tx_char->setValue(json);   // the Mac reads this value over BLE
 }
 
 void ble_usb_note_alive(void) {

@@ -1,19 +1,21 @@
-"""New Pluribus chat and room replies, as ``rm`` frames for the Clawdmeter.
+"""Unread Pluribus agent messages, as ``rm`` frames for the Clawdmeter.
 
-Every finished agent reply in a shared chat or Room pops up on the device,
-whether or not Pluribus thinks Chris saw it (a Mac window can be "open" on the
-room while buried under other apps). Source: Pluribus's own durable reply
-receipts (``_chat_reply_receipts`` on each session), read over the existing
-authenticated local API. Nothing in Pluribus changes.
+Every finished agent message in a shared chat or Room (replies and proactive
+check-ins alike) pops up on the device while it is unread and under five
+minutes old, so the device behaves like the phone's notifications: reading the
+chat on any device clears it (``rd`` frame), and a tap on the device marks it
+read in Pluribus (``mark_read``), which clears the phone too. Source: Pluribus's
+durable reply receipts (``_chat_reply_receipts``) plus the per-session
+``unread_count``, over the existing authenticated local API.
 
-Each reply is its own small frame; the device queues them (oldest first),
+Each message is its own small frame; the device queues them (oldest first),
 dedups by id, and drops them after ``WINDOW_MINUTES``::
 
     {"rm": {"i": "<msg id>", "r": "DEAL ROOM", "g": "skeptic", "w": "Sloane",
             "t": "The margin math only works if...", "a": 3}}
 
-Private sessions, meeting-bound chats and agent check-ins (shown separately
-from the Team feed) are skipped. Only a short preview leaves the Mac.
+Private sessions and meeting-bound chats are skipped. Only a short preview
+leaves the Mac.
 """
 
 from __future__ import annotations
@@ -36,14 +38,16 @@ PollResult = pluribus.PollResult
 
 BASE_URL = "http://127.0.0.1:8077/api/ask/sessions"
 REQUEST_TIMEOUT = 2.5
-WINDOW_MINUTES = 180
+WINDOW_MINUTES = 5
 MAX_REPLIES = 12
 TEXT_BYTES = 56            # two lines of Styrene 28 on the 480 px panel
 ROOM_BYTES = 18
 CONTEXTS = {"agent", "room", "general", "companion"}
-SKIP_TURNS = {"room_pass", "system", "recovery", "proactive"}
+SKIP_TURNS = {"room_pass", "system", "recovery"}
 
 _detail_cache: dict[str, tuple[str, list[dict]]] = {}   # id -> (updated_at, replies)
+# Device item id -> (session id, receipt time) for marking taps read.
+_index: dict[str, tuple[str, str]] = {}
 
 
 def _parse_local(value: object) -> dt.datetime | None:
@@ -104,10 +108,9 @@ def session_replies(session: dict, now: dt.datetime) -> list[dict]:
         if message is None or at is None or not _completed(message):
             continue
         age = max(0, int((now - at).total_seconds() // 60))
-        if age >= WINDOW_MINUTES:
-            continue
         agent = str(message.get("agent_id") or host)
         out.append({
+            "_at": str(receipt.get("updated_at")),
             "i": re.sub(r"[^0-9A-Za-z]", "", str(message["id"]))[:12],
             "r": room,
             "g": pluribus.display_text(agent, 16),
@@ -151,7 +154,9 @@ def fetch_recent(
                     continue
                 updated = _parse_local(meta.get("updated_at"))
                 sid = meta.get("id")
-                if not isinstance(sid, str) or updated is None or updated < cutoff:
+                unread = meta.get("unread_count")
+                if (not isinstance(sid, str) or updated is None or updated < cutoff
+                        or not isinstance(unread, int) or unread <= 0):
                     continue
                 live.add(sid)
                 stamp = str(meta.get("updated_at"))
@@ -161,15 +166,16 @@ def fetch_recent(
                     detail.raise_for_status()
                     body = detail.json()
                     session = body.get("session", body) if isinstance(body, dict) else {}
-                    # Keep receipts with their observation time; ages are
-                    # recomputed below so cached entries keep aging.
-                    items = session_replies(session, now)
-                    for item in items:
-                        item["_at"] = (now - dt.timedelta(minutes=item["a"])).isoformat()
-                    _detail_cache[sid] = (stamp, items)
-                for item in _detail_cache[sid][1]:
-                    age = max(0, int((now - dt.datetime.fromisoformat(item["_at"])).total_seconds() // 60))
+                    _detail_cache[sid] = (stamp, session_replies(session, now))
+                # Pluribus counts unread as the receipts newer than the read
+                # mark, so the newest ``unread`` receipts are the unread ones.
+                for item in sorted(_detail_cache[sid][1], key=lambda r: r["_at"])[-unread:]:
+                    at = _parse_local(item["_at"])
+                    age = max(0, int((now - at).total_seconds() // 60)) if at else WINDOW_MINUTES
                     if age < WINDOW_MINUTES:
+                        if len(_index) > 500:
+                            _index.clear()
+                        _index[item["i"]] = (sid, item["_at"])
                         replies.append({**{k: v for k, v in item.items() if k != "_at"}, "a": age})
             for stale in set(_detail_cache) - live:
                 del _detail_cache[stale]
@@ -177,6 +183,34 @@ def fetch_recent(
         return PollResult(False)
     replies.sort(key=lambda r: -r["a"])            # oldest first
     return PollResult(True, {"replies": replies[-MAX_REPLIES:]})
+
+
+def mark_read(ids: list[str], *, env: Mapping[str, str] | None = None,
+              client_factory=httpx.Client) -> int:
+    """Mark tapped device items read in Pluribus (which clears the phone too).
+
+    Each session is acknowledged through its newest tapped message. Returns the
+    number of sessions marked; unknown ids (already expired) are ignored.
+    """
+    through: dict[str, str] = {}
+    for item_id in ids:
+        hit = _index.get(item_id)
+        if hit and hit[1] > through.get(hit[0], ""):
+            through[hit[0]] = hit[1]
+    token = pluribus.resolve_auth_token(env)
+    if not through or not token:
+        return 0
+    marked = 0
+    try:
+        with client_factory(timeout=REQUEST_TIMEOUT) as client:
+            for sid, at in through.items():
+                r = client.post(f"{BASE_URL}/{sid}/read", json={"through_updated_at": at},
+                                headers={"Authorization": f"Bearer {token}"})
+                if r.status_code < 300:
+                    marked += 1
+    except httpx.HTTPError:
+        pass
+    return marked
 
 
 def valid_reply(item: object) -> bool:

@@ -63,6 +63,7 @@ else:
 DEVICE_NAME = "Clawdmeter"
 SERVICE_UUID = "4c41555a-4465-7669-6365-000000000001"
 RX_CHAR_UUID = "4c41555a-4465-7669-6365-000000000002"
+TX_CHAR_UUID = "4c41555a-4465-7669-6365-000000000003"  # readable value = tap report
 REQ_CHAR_UUID = "4c41555a-4465-7669-6365-000000000004"
 
 POLL_INTERVAL = 60
@@ -727,6 +728,14 @@ def fetch_display_pluribus() -> pluribus_source.PollResult:
     return agent_messages.fetch_waiting()
 
 
+def mark_display_read(ids: list[str]) -> None:
+    """Device taps -> read in Pluribus (locally, or through the Mac mini relay)."""
+    if relay_source.is_configured():
+        relay_source.post_read(ids)
+    else:
+        chat_replies.mark_read(ids)
+
+
 def fetch_display_rooms() -> list | None:
     """Recent chat/Room replies, local or relayed; None = unavailable."""
     if relay_source.is_configured():
@@ -741,6 +750,9 @@ class Session:
         self.client = client
         self.refresh_requested = asyncio.Event()
         self.write_lock = asyncio.Lock()
+        self._last_tap_read = 0.0
+        self._tap_failures = 0
+        self._tap_seq: int | None = None
 
     def _on_refresh(self, _char, _data: bytearray) -> None:
         log("Refresh requested by device")
@@ -777,6 +789,33 @@ class Session:
         except (BleakError, OSError) as e:
             log(f"Write failed: {e}")
             return False
+
+    async def take_taps(self) -> list[str]:
+        """Read the device's tap report (the TX value) at most every 5 s.
+
+        Reads only, never subscribes: subscribing during macOS bond restore
+        crashed the ESP32 (CLAUDE.md BLE invariants). Gives up after repeated
+        failures so a misbehaving read can never stall the display loop.
+        """
+        now = time.monotonic()
+        if now - self._last_tap_read < 5.0 or self._tap_failures >= 5:
+            return []
+        self._last_tap_read = now
+        try:
+            async with self.write_lock:
+                raw = await asyncio.wait_for(self.client.read_gatt_char(TX_CHAR_UUID), timeout=5)
+            report = json.loads(bytes(raw).decode() or "{}")
+        except (BleakError, OSError, ValueError, asyncio.TimeoutError):
+            self._tap_failures += 1
+            return []
+        seq = report.get("s") if isinstance(report, dict) else None
+        if not isinstance(seq, int) or seq == self._tap_seq:
+            return []
+        first = self._tap_seq is None
+        self._tap_seq = seq
+        if first:
+            return []   # a report left over from before this connection
+        return [i for i in str(report.get("tap", "")).split(",") if i]
 
     async def write_packet(self, packet: bytes) -> int:
         """One binary packet (agent clip start/chunk). BLE can't report "have"."""
@@ -922,14 +961,13 @@ async def run_session(session, stop_event: asyncio.Event, is_connected,
     """
     last_poll = 0.0
     next_music_poll = 0.0
-    next_pluribus_poll = 0.0
     last_music_id: str | None = None
     music_was_playing = False
-    last_pluribus_payload: object = object()
     used_successfully = False
     next_usb_check = time.time() + USB_CHECK_INTERVAL
     next_rooms_poll = 0.0
-    rooms_sent: set[str] = set()   # reply ids written this session; the device dedups too
+    rooms_sent: set[str] = set()   # message ids on the device this session
+    cleared_checkins = False
     wired = usb_link is not None and isinstance(session, usb_link.UsbSession)
     clips = agent_clips.ClipSender(agent_clips.load_clips(), chunk=1024 if wired else 230)
     while is_connected() and not stop_event.is_set():
@@ -1014,40 +1052,41 @@ async def run_session(session, stop_event: asyncio.Event, is_connected,
             music_was_playing = False
             last_music_id = None
 
-        # Pluribus is another independent local source. Its authenticated
-        # HTTP request runs off the asyncio event loop, and an unavailable
-        # or malformed response intentionally emits no BLE update so the
-        # firmware can retain and locally age its last valid activity.
-        if now >= next_pluribus_poll:
-            next_pluribus_poll = now + PLURIBUS_POLL_INTERVAL
-            try:
-                result = await asyncio.to_thread(fetch_display_pluribus)
-            except Exception as e:
-                # Never include resolved config or the bearer token here.
-                log(f"Pluribus activity source failed: {type(e).__name__}")
-                result = pluribus_source.PollResult(False)
-            if result.available and result.payload != last_pluribus_payload:
-                if await session.write_payload(result.payload):
-                    last_pluribus_payload = result.payload
-                    used_successfully = True
-
-        # Chat and Room replies: each new one is its own small frame.
+        # Unread agent messages (replies and check-ins), each its own frame.
+        # Ones no longer unread (read on any device, or aged out) are cleared
+        # on the device with an "rd" frame.
         if time.time() >= next_rooms_poll:
             next_rooms_poll = time.time() + ROOMS_POLL_INTERVAL
+            if not cleared_checkins:
+                # The Team-feed check-in list is retired; empty it on the device.
+                cleared_checkins = await session.write_payload({"am": {"n": 0, "m": []}})
             try:
                 replies = await asyncio.to_thread(fetch_display_rooms)
             except Exception as e:
                 log(f"Chat reply source failed: {type(e).__name__}")
                 replies = None
-            for item in replies or []:
-                if item.get("i") in rooms_sent:
-                    continue
-                if not await session.write_payload({"rm": item}):
-                    break
-                rooms_sent.add(item["i"])
-                used_successfully = True
-            if len(rooms_sent) > 200:
-                rooms_sent = {r["i"] for r in replies or []}
+            if replies is not None:
+                gone = sorted(rooms_sent - {r["i"] for r in replies})
+                for start in range(0, len(gone), 12):
+                    batch = gone[start:start + 12]
+                    if await session.write_payload({"rd": batch}):
+                        rooms_sent.difference_update(batch)
+                for item in replies:
+                    if item["i"] in rooms_sent:
+                        continue
+                    if not await session.write_payload({"rm": item}):
+                        break
+                    rooms_sent.add(item["i"])
+                    used_successfully = True
+
+        # Taps on the device: mark those messages read in Pluribus.
+        taps = await session.take_taps()
+        if taps:
+            log(f"Device tapped away {len(taps)} message(s); marking read")
+            try:
+                await asyncio.to_thread(mark_display_read, taps)
+            except Exception as e:
+                log(f"Mark-read failed: {type(e).__name__}")
 
         # Agent animation clips trickle over in the background once usage is up.
         if used_successfully and not clips.done:

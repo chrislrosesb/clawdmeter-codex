@@ -51,6 +51,11 @@ int ble_usb_packet(const uint8_t* data, size_t len);
 void ble_usb_note_alive(void);
 bool ble_usb_active(void);
 
+// Agent messages tapped away on the device, for the Mac to mark read in
+// Pluribus: stored as the TX characteristic's readable value (BLE). Over USB
+// the same report goes out as a "#tap" line.
+void ble_set_tap_report(const char* json);
+
 // BLE HID keyboard
 void ble_keyboard_press(uint8_t key, uint8_t modifier);
 void ble_keyboard_release(void);

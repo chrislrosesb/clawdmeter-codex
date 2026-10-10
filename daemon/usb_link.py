@@ -66,6 +66,7 @@ class UsbPort:
         termios.tcsetattr(self.fd, termios.TCSANOW, attrs)
         termios.tcflush(self.fd, termios.TCIOFLUSH)
         self._buf = b""
+        self.taps: list[str] = []   # "#tap" lines seen while waiting for replies
 
     def close(self) -> None:
         if self.fd >= 0:
@@ -89,10 +90,10 @@ class UsbPort:
     def read_line(self, timeout: float) -> bytes | None:
         deadline = time.monotonic() + timeout
         while b"\n" not in self._buf:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                return None
+            left = max(0.0, deadline - time.monotonic())
             ready, _, _ = select.select([self.fd], [], [], left)
+            if not ready and left <= 0:
+                return None
             if ready:
                 chunk = os.read(self.fd, 4096)
                 if not chunk:
@@ -111,6 +112,9 @@ class UsbPort:
             line = self.read_line(left)
             if line is None:
                 return None
+            if line.startswith(b"#tap "):
+                self.taps.extend(i for i in line[5:].decode(errors="ignore").split(",") if i)
+                continue
             if line.startswith(prefixes):
                 return line
 
@@ -229,6 +233,22 @@ class UsbSession:
             log(f"Artwork sent over USB ({len(frame)} bytes, "
                 f"{time.monotonic() - started:.2f}s)")
         return bool(ok)
+
+    async def take_taps(self) -> list[str]:
+        """Messages tapped away on the device ("#tap" lines) since last call."""
+        def drain() -> list[str]:
+            # Pick up a tap that arrived while nothing was being sent.
+            while True:
+                line = self.port.read_line(0)
+                if line is None:
+                    break
+                if line.startswith(b"#tap "):
+                    self.port.taps.extend(
+                        i for i in line[5:].decode(errors="ignore").split(",") if i)
+            taps, self.port.taps = self.port.taps, []
+            return taps
+
+        return await self._run(drain) or []
 
     async def disconnect(self) -> None:
         self.connected = False
